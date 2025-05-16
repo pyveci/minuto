@@ -30,6 +30,8 @@ This tool calculates compensation for on-call shifts based on data from OpsGenie
 3. Install dependencies:
 
 ```bash
+git clone https://github.com/pyveci/minuto.git
+cd minuto
 uv pip install -e .
 ```
 
