@@ -1,0 +1,20 @@
+[project]
+name = "minuto"
+version = "0.0.0"
+description = "Calculate on-call compensation based on OpsGenie API data"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "pytz",
+    "python-dateutil",
+    "holidays",
+    "matplotlib",
+    "pydantic",
+    "requests",
+    "click",
+    "python-dotenv",
+    "email-validator",
+    "icalendar",
+    "xlsxwriter",
+]
