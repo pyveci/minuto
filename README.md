@@ -32,7 +32,10 @@ This tool calculates compensation for on-call shifts based on data from OpsGenie
 ```bash
 git clone https://github.com/pyveci/minuto.git
 cd minuto
+uv venv --python 3.12 --seed .venv
+source .venv/bin/activate
 uv pip install -e .
+uv pip install build
 ```
 
 ## Configuration

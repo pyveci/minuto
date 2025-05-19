@@ -1253,7 +1253,7 @@ def fetch_shifts_from_opsgenie(
         error_message = f"Error from OpsGenie API: {response.status_code}"
         try:
             error_message += f" - {response.json()}"
-        except:
+        except: # noqa: E722
             pass
         raise RuntimeError(error_message)
 

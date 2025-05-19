@@ -18,3 +18,12 @@ dependencies = [
     "icalendar",
     "xlsxwriter",
 ]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.3.5",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

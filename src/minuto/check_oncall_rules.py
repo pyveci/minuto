@@ -13,9 +13,8 @@ provides a summary of compliance status for each user.
 """
 
 from datetime import datetime, timedelta
-from pathlib import Path
 import sys
-from typing import Dict, List, Set, Tuple, Any
+from typing import Dict, Set, Any
 
 import click
 import pandas as pd
@@ -271,7 +270,7 @@ def print_report(results: Dict[str, Dict[str, Any]], verbose: bool = False):
                     click.echo("  Monthly limit violations:")
                     for v in monthly_violations:
                         click.echo(f"    {v['month_name']}: {v['shifts']} shifts, {v['days']} days, {v['hours']:.1f} hours")
-                        click.echo(f"      (limits: 10 shifts, 10 days, 168 hours per month)")
+                        click.echo("      (limits: 10 shifts, 10 days, 168 hours per month)")
 
                 if quarterly_violations:
                     click.echo("  Three-month period limit violations:")
