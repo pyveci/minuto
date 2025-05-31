@@ -12,7 +12,7 @@ These tests verify various compensation calculation scenarios including:
 import json
 import datetime
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, datetime
 import unittest
 from unittest.mock import patch
 
@@ -535,5 +535,183 @@ class TestUserProfileTimezones(unittest.TestCase):
         self.assertLess(ny_compensated, vienna_compensated)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestCompensationReporting(unittest.TestCase):
+    """Test the compensation reporting functionality."""
+
+    def setUp(self):
+        """Set up test fixtures before each test method."""
+        # Create a temporary directory for test data
+        self.test_dir = Path('test_data')
+        self.test_dir.mkdir(exist_ok=True)
+
+        # Create test user profiles with rotation periods specified
+        self.test_profiles = [
+            {
+                "email": "test.user@example.com",
+                "timezone": "Europe/Vienna",
+                "working_days": [0, 1, 2, 3, 4],
+                "working_hours_start": "09:00:00",
+                "working_hours_end": "17:00:00",
+                "country_code": "AT",
+                "first_month_on_rotation": "2024-06",
+                "last_month_on_rotation": "2024-07"  # Only two months in rotation
+            }
+        ]
+
+        # Save test profiles to a file
+        self.profiles_path = self.test_dir / 'test_reporting_profiles.json'
+        with open(self.profiles_path, 'w') as f:
+            json.dump(self.test_profiles, f)
+
+        # Initialize calculator with test profiles
+        self.calculator = CompensationCalculator(user_profiles_path=self.profiles_path)
+
+    def tearDown(self):
+        """Clean up after each test method."""
+        # Remove test files
+        if self.profiles_path.exists():
+            self.profiles_path.unlink()
+
+        # Remove test directory if it's empty
+        if self.test_dir.exists() and not list(self.test_dir.iterdir()):
+            self.test_dir.rmdir()
+
+    def test_report_includes_month_without_shifts(self):
+        """Test that the monthly report includes months without shifts."""
+        from minuto.main import CompensationReport
+
+        # Setup profiles with two users, both with the same rotation period
+        self.test_profiles.append({
+            "email": "second.user@example.com",
+            "timezone": "Europe/Vienna",
+            "working_days": [0, 1, 2, 3, 4],
+            "working_hours_start": "09:00:00",
+            "working_hours_end": "17:00:00",
+            "country_code": "AT",
+            "first_month_on_rotation": "2024-06",
+            "last_month_on_rotation": "2024-07"
+        })
+
+        # Update the profiles file
+        with open(self.profiles_path, 'w') as f:
+            json.dump(self.test_profiles, f)
+
+        # Reinitialize calculator with updated profiles
+        self.calculator = CompensationCalculator(user_profiles_path=self.profiles_path)
+
+        # Create shifts for both users
+        shifts = []
+
+        # First user: shift only in June 2024
+        start1 = datetime(2024, 6, 15, 9, 0, 0, tzinfo=pytz.UTC)
+        end1 = start1 + timedelta(hours=8)
+        shifts.append(OnCallShift(
+            start=start1,
+            end=end1,
+            hours=8.0,
+            user="test.user@example.com"
+        ))
+
+        # Second user: shifts in both June and July 2024
+        start2 = datetime(2024, 6, 20, 9, 0, 0, tzinfo=pytz.UTC)
+        end2 = start2 + timedelta(hours=8)
+        shifts.append(OnCallShift(
+            start=start2,
+            end=end2,
+            hours=8.0,
+            user="second.user@example.com"
+        ))
+
+        start3 = datetime(2024, 7, 10, 9, 0, 0, tzinfo=pytz.UTC)
+        end3 = start3 + timedelta(hours=8)
+        shifts.append(OnCallShift(
+            start=start3,
+            end=end3,
+            hours=8.0,
+            user="second.user@example.com"
+        ))
+
+        # Calculate compensation periods for all shifts
+        all_periods = []
+        for shift in shifts:
+            periods = self.calculator.calculate_compensation(shift)
+            all_periods.extend(periods)
+
+        # Add debug information
+        print("\nDEBUG INFO:")
+        print(f"User profiles: {self.calculator.user_profiles}")
+        for user, profile in self.calculator.user_profiles.items():
+            print(f"User {user} rotation: {profile.first_month_on_rotation} - {profile.last_month_on_rotation}")
+        print(f"Total shifts: {len(shifts)}")
+        print(f"Generated periods: {len(all_periods)}")
+
+        # Generate the report
+        report = CompensationReport(all_periods, self.calculator.user_profiles)
+
+        # Get the user-month totals
+        user_month_totals = report.get_user_month_totals()
+
+        # Print debug info about the report
+        print("\nReport DataFrame Contents:")
+        print(f"DataFrame shape: {user_month_totals.shape}")
+        print(f"All users: {user_month_totals['User'].unique().tolist()}")
+        print(f"All months: {user_month_totals['Year-Month'].unique().tolist()}")
+
+        # Print full dataframe for debugging
+        print("\nFull DataFrame:")
+        print(user_month_totals)
+
+        # Check both months in rotation period are included for first user
+        expected_months = ['2024-06', '2024-07']  # June has shifts, July doesn't
+        user1_months = user_month_totals[user_month_totals['User'] == 'test.user@example.com']['Year-Month'].tolist()
+        user1_months.sort()
+
+        print(f"\nUser 1 Expected months: {expected_months}")
+        print(f"User 1 Actual months: {user1_months}")
+
+        # Check that both expected months are present for first user
+        self.assertEqual(expected_months, user1_months,
+                         f"Report should include both months for first user. Expected: {expected_months}, Got: {user1_months}")
+
+        # Check both months are present for second user too
+        user2_months = user_month_totals[user_month_totals['User'] == 'second.user@example.com']['Year-Month'].tolist()
+        user2_months.sort()
+
+        print(f"\nUser 2 Expected months: {expected_months}")
+        print(f"User 2 Actual months: {user2_months}")
+
+        self.assertEqual(expected_months, user2_months,
+                         f"Report should include both months for second user. Expected: {expected_months}, Got: {user2_months}")
+
+        # Verify that all months are pre-payment eligible for both users
+        eligibility1 = user_month_totals[user_month_totals['User'] == 'test.user@example.com']['PrePaymentEligible'].tolist()
+        self.assertTrue(all(eligibility1), "All months should be marked as pre-payment eligible for first user")
+
+        eligibility2 = user_month_totals[user_month_totals['User'] == 'second.user@example.com']['PrePaymentEligible'].tolist()
+        self.assertTrue(all(eligibility2), "All months should be marked as pre-payment eligible for second user")
+
+        # First user: June should have compensation > 0, July should have compensation = 0
+        june_data1 = user_month_totals[
+            (user_month_totals['User'] == 'test.user@example.com') &
+            (user_month_totals['Year-Month'] == '2024-06')
+        ]
+        self.assertGreater(june_data1['Amount'].values[0], 0, "June should have compensation amount > 0 for first user")
+
+        july_data1 = user_month_totals[
+            (user_month_totals['User'] == 'test.user@example.com') &
+            (user_month_totals['Year-Month'] == '2024-07')
+        ]
+        self.assertEqual(july_data1['Amount'].values[0], 0, "July should have compensation amount = 0 for first user")
+
+        # Second user: Both June and July should have compensation > 0
+        june_data2 = user_month_totals[
+            (user_month_totals['User'] == 'second.user@example.com') &
+            (user_month_totals['Year-Month'] == '2024-06')
+        ]
+        self.assertGreater(june_data2['Amount'].values[0], 0, "June should have compensation amount > 0 for second user")
+
+        july_data2 = user_month_totals[
+            (user_month_totals['User'] == 'second.user@example.com') &
+            (user_month_totals['Year-Month'] == '2024-07')
+        ]
+        self.assertGreater(july_data2['Amount'].values[0], 0, "July should have compensation amount > 0 for second user")

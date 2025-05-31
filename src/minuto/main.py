@@ -50,7 +50,8 @@ HOLIDAY_CALENDAR_URLS = {
     'FR': 'https://www.officeholidays.com/ics/france',
     'ES': 'https://www.officeholidays.com/ics/spain',
     'BG': 'https://www.officeholidays.com/ics/bulgaria',
-    'DE': 'https://www.officeholidays.com/ics/germany'
+    'DE': 'https://www.officeholidays.com/ics/germany',
+    'TH': 'https://www.officeholidays.com/ics/thailand'
 }
 
 # Default country code for new profiles
@@ -74,6 +75,8 @@ class UserProfile(BaseModel):
     country_code: str = Field(default=DEFAULT_COUNTRY_CODE)
     region: Optional[str] = None
     custom_holidays: List[str] = Field(default_factory=list)
+    first_month_on_rotation: Optional[str] = None
+    last_month_on_rotation: Optional[str] = None
     # Removed calendar_file field since we'll handle calendars dynamically
 
     @field_validator('timezone')
@@ -572,8 +575,9 @@ class CompensationCalculator:
 class CompensationReport:
     """Generates reports for on-call compensation"""
 
-    def __init__(self, compensation_periods: List[CompensationPeriod]):
+    def __init__(self, compensation_periods: List[CompensationPeriod], user_profiles_dict: Optional[Dict[str, UserProfile]] = None):
         self.periods = compensation_periods
+        self.user_profiles = user_profiles_dict or {}  # Store user profiles dictionary
         self.df = self._prepare_dataframe()
 
     def _prepare_dataframe(self) -> pd.DataFrame:
@@ -636,16 +640,68 @@ class CompensationReport:
     def get_user_month_totals(self) -> pd.DataFrame:
         """Generate total compensation per user per month"""
         if self.df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(columns=['User', 'Year-Month', 'Compensated Hours', 'Amount', 'PrePaymentEligible'])
+
+        # Get all users from shifts
+        all_users = set(self.df['User'].unique())
 
         # Add year-month column to the dataframe
         self.df['Year-Month'] = self.df['Date'].apply(lambda x: f"{x.year}-{x.month:02d}")
 
-        # Group by user and year-month
-        return self.df.groupby(['User', 'Year-Month']).agg({
+        # Find the overall date range of all shifts
+        min_date = self.df['Date'].min()
+        max_date = self.df['Date'].max()
+
+        # Generate a list of all year-months in the date range
+        all_months = []
+        current_date = datetime(min_date.year, min_date.month, 1)
+        end_date = datetime(max_date.year, max_date.month, 1)
+
+        while current_date <= end_date:
+            all_months.append(current_date.strftime("%Y-%m"))
+            # Move to next month
+            if current_date.month == 12:
+                current_date = datetime(current_date.year + 1, 1, 1)
+            else:
+                current_date = datetime(current_date.year, current_date.month + 1, 1)
+
+        # Create a complete dataframe with all user-month combinations
+        rows = []
+        for user in all_users:
+            for month in all_months:
+                rows.append({'User': user, 'Year-Month': month})
+
+        complete_df = pd.DataFrame(rows)
+
+        # Get actual compensation data
+        actual_data = self.df.groupby(['User', 'Year-Month']).agg({
             'Compensated Hours': 'sum',
             'Amount': 'sum'
         }).reset_index()
+
+        # Merge actual data with complete dataframe
+        result_df = pd.merge(complete_df, actual_data, on=['User', 'Year-Month'], how='left')
+
+        # Fill missing values with zeros
+        result_df['Compensated Hours'] = result_df['Compensated Hours'].fillna(0.0)
+        result_df['Amount'] = result_df['Amount'].fillna(0.0)
+
+        # Add a column to track pre-payment eligibility
+        result_df['PrePaymentEligible'] = True  # Default to eligible
+
+        # Check eligibility based on user profile rotation dates if available
+        for index, row in result_df.iterrows():
+            user_email = row['User']
+            year_month = row['Year-Month']
+
+            # Get user's profile
+            profile = self.user_profiles.get(user_email)
+            if profile and profile.first_month_on_rotation and profile.last_month_on_rotation:
+                # Check if this month is within the rotation period
+                if not (profile.first_month_on_rotation <= year_month <= profile.last_month_on_rotation):
+                    result_df.at[index, 'PrePaymentEligible'] = False
+
+        return result_df.sort_values(['User', 'Year-Month'])
 
     def get_grand_total(self) -> float:
         """Get the grand total compensation amount"""
@@ -760,8 +816,8 @@ class CompensationReport:
         # User-Month totals
         user_month_totals = self.get_user_month_totals()
         print("\n=== USER TOTALS PER MONTH (INCLUDING PRE-PAID COMPENSATION) ===")
-        print(f"{'User':<30} {'Month':<10} {'Total Hours':<12} {'Raw Amount (€)':<15} {'Pre-Paid (€)':<15} {'Final Amount (€)':<15}")
-        print("-" * 100)
+        print(f"{'User':<30} {'Month':<10} {'Total Hours':<12} {'Raw Amount (€)':<15} {'Pre-Paid (€)':<15} {'Final Amount (€)':<15} {'Pre-Pay Eligible':<15}")
+        print("-" * 120)
 
         # Sort by user and year-month
         user_month_totals = user_month_totals.sort_values(['User', 'Year-Month'])
@@ -769,6 +825,8 @@ class CompensationReport:
         current_user = None
         user_total_hours = 0
         user_total_raw_amount = 0
+        user_total_prepaid = 0
+        user_months_eligible = 0
 
         # Variables to track unique months per user
         user_unique_months = {}
@@ -803,24 +861,31 @@ class CompensationReport:
             user_total_hours += row['Compensated Hours']
             user_total_raw_amount += row['Amount']
 
-            # Calculate pre-paid amount for this month (for display purposes only)
-            year, month = map(int, row['Year-Month'].split('-'))
+            # Get pre-payment eligibility for this month
+            is_eligible = row['PrePaymentEligible']
 
-            # For display purposes, show the full monthly pre-paid amount
-            month_prepaid = 510.0
+            # Calculate pre-paid amount based on eligibility
+            month_prepaid = 510.0 if is_eligible else 0.0
+            user_total_prepaid += month_prepaid
+            if is_eligible:
+                user_months_eligible += 1
 
             # Calculate the adjusted amount for this month (for display purposes only)
             month_adjusted = max(0, row['Amount'] - month_prepaid)
 
+            # Format the month name
+            year, month = map(int, row['Year-Month'].split('-'))
             month_name = datetime(year, month, 1).strftime('%Y %b')
 
+            # Print the row with eligibility indicator
             print(
                 f"{row['User']:<30} "
                 f"{month_name:<10} "
                 f"{row['Compensated Hours']:<12.1f} "
                 f"{row['Amount']:<15.2f} "
                 f"{month_prepaid:<15.2f} "
-                f"{month_adjusted:<15.2f}"
+                f"{month_adjusted:<15.2f} "
+                f"{'Yes' if is_eligible else 'No':<15}"
             )
 
         # Print final user subtotal if we had any data
@@ -1107,7 +1172,12 @@ class CompensationReport:
             if not user_month_totals.empty:
                 # Add columns for pre-paid and final amount calculation
                 user_month_df = user_month_totals.copy()
-                user_month_df['Pre-Paid Amount'] = 510.0  # Fixed pre-paid amount per month
+
+                # Apply pre-paid amount based on eligibility
+                user_month_df['Pre-Paid Amount'] = user_month_df.apply(
+                    lambda row: 510.0 if row['PrePaymentEligible'] else 0.0, axis=1
+                )
+
                 user_month_df['Final Amount'] = user_month_df.apply(
                     lambda row: max(0, row['Amount'] - row['Pre-Paid Amount']), axis=1
                 )
@@ -1117,8 +1187,13 @@ class CompensationReport:
                     lambda ym: datetime(int(ym.split('-')[0]), int(ym.split('-')[1]), 1).strftime('%B %Y')
                 )
 
+                # Add eligibility indicator
+                user_month_df['Eligible'] = user_month_df['PrePaymentEligible'].apply(
+                    lambda eligible: 'Yes' if eligible else 'No'
+                )
+
                 # Reorder columns
-                user_month_df = user_month_df[['User', 'Year-Month', 'Month Name', 'Compensated Hours',
+                user_month_df = user_month_df[['User', 'Year-Month', 'Month Name', 'Eligible', 'Compensated Hours',
                                               'Amount', 'Pre-Paid Amount', 'Final Amount']]
 
                 user_month_df.to_excel(writer, sheet_name='User Month Totals', index=False)
@@ -1316,7 +1391,7 @@ def save_shifts_to_csv(shifts: List[OnCallShift], output_path: Path):
     print(f"Saved {len(shifts)} shifts to {output_path}")
 
 
-def create_default_user_profiles(users: List[str], output_path: Path):
+def create_default_user_profiles(users: List[str], output_path: Path, all_shifts: List[OnCallShift]):
     """Create a default user profiles JSON file for the given users"""
     profiles = []
 
@@ -1337,13 +1412,24 @@ def create_default_user_profiles(users: List[str], output_path: Path):
         click.echo(f"Using Austria holiday calendar: {calendar_file}")
 
     for user in users:
+        user_shifts = [s for s in all_shifts if s.user == user]
+        first_month = None
+        last_month = None
+        if user_shifts:
+            min_date = min(s.start for s in user_shifts)
+            max_date = max(s.end for s in user_shifts) # Use end date of last shift
+            first_month = min_date.strftime("%Y-%m")
+            last_month = max_date.strftime("%Y-%m")
+
         profile = {
             "email": user,
             "timezone": "Europe/Berlin",  # Default timezone for German users
             "working_days": [0, 1, 2, 3, 4],  # Monday to Friday
             "working_hours_start": "09:00:00",
-            "working_hours_end": "17:00:00",
-            "country_code": DEFAULT_COUNTRY_CODE  # Austria as default
+            "working_hours_end": "16:42:00",
+            "country_code": DEFAULT_COUNTRY_CODE,  # Austria as default
+            "first_month_on_rotation": first_month,
+            "last_month_on_rotation": last_month
         }
         profiles.append(profile)
 
@@ -1366,7 +1452,7 @@ def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_e
     if create_profiles:
         users = list(set(shift.user for shift in shifts))
         output_path = user_profiles or Path('user_profiles.json')
-        create_default_user_profiles(users, output_path)
+        create_default_user_profiles(users, output_path, shifts)
         if not user_profiles:  # if we just created default profiles, exit
             return
 
@@ -1382,12 +1468,12 @@ def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_e
         compensation_periods.extend(periods)  # Extend with all periods (including holiday periods)
 
     # Generate and print report
-    report = CompensationReport(compensation_periods)
+    report = CompensationReport(compensation_periods, calculator.user_profiles)
     report.print_report()
 
     # Generate plot if requested
     if output_plot:
-        report.plot_hours_distribution(output_plot)
+        report.plot_daily_amounts(output_plot)
 
     # Export to Excel if requested
     if export_excel:
@@ -1636,6 +1722,7 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
         click.echo(f"Error fetching data from OpsGenie API: {str(e)}", err=True)
         sys.exit(1)
 
+    # Process shifts (calculate compensation, generate reports, etc.)
     process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
 
 
@@ -1646,21 +1733,20 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
               default='user_profiles.json',
               help='Output path for the user profiles JSON file',
               envvar='OPSGENIE_PROFILES_OUTPUT')
-def create_profiles(csv_file, output):
-    """Create default user profiles from a CSV file with on-call shifts."""
-    try:
-        shifts = load_shifts_from_csv(csv_file)
-        users = list(set(shift.user for shift in shifts))
-        create_default_user_profiles(users, output)
-        click.echo(f"Created profiles for {len(users)} users at {output}")
-    except Exception as e:
-        click.echo(f"Error creating profiles: {str(e)}", err=True)
-        sys.exit(1)
+def create_user_profiles_from_csv(csv_file: Path, output: Path):
+    """Create default user profiles from on-call data in a CSV file."""
+    shifts = load_shifts_from_csv(csv_file)
+    if not shifts:
+        print("No shifts found in the CSV file. Cannot generate profiles.")
+        return
+
+    users = list(set(shift.user for shift in shifts))
+    create_default_user_profiles(users, output, shifts)
 
 
 @cli.command('calendars')
 @click.option('--country', '-c',
-              type=click.Choice(['AT', 'DE', 'FR', 'ES', 'BG'], case_sensitive=False),
+              type=click.Choice(['AT', 'DE', 'FR', 'ES', 'BG', 'TH'], case_sensitive=False),
               multiple=True,
               help='Country codes to download calendars for')
 @click.option('--year', '-y', type=int,
@@ -1684,7 +1770,7 @@ def download_calendars(country, year, year_range, output_dir, all_countries, lis
     # Process country options
     if all_countries:
         # Use hardcoded list of countries instead of calling .keys()
-        countries_to_download = ['AT', 'FR', 'ES', 'BG', 'DE']
+        countries_to_download = ['AT', 'FR', 'ES', 'BG', 'DE', 'TH']
     elif country:
         # Convert the country tuple to a list without calling list()
         countries_to_download = [c for c in country]
