@@ -79,7 +79,7 @@ Retrieve on-call shift data directly from the OpsGenie API:
 ```bash
 uv run main.py opsgenie --api-token YOUR_TOKEN --schedule-id YOUR_SCHEDULE_ID \
     --start-date 2025-01-01 --end-date 2025-05-09 \
-    --save-csv shifts.csv --user-profiles profiles.json
+    --save-csv shifts.csv --user-profiles user_profiles.json
 ```
 
 Or using environment variables:
@@ -94,7 +94,7 @@ uv run main.py opsgenie
 If you already have on-call data in a CSV file:
 
 ```bash
-uv run main.py csv shifts.csv --user-profiles profiles.json --output-plot compensation_chart.png
+uv run main.py csv shifts.csv --user-profiles user_profiles.json --output-plot compensation_chart.png
 ```
 
 ### 3. Create User Profiles

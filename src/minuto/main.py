@@ -137,42 +137,36 @@ class CompensationCalculator:
 
     def _load_holidays_for_user(self, profile: UserProfile):
         """Initialize holidays for a user based on their country/region"""
-        user_holiday_dict = {}
         holiday_sources = []
 
         try:
-            # First try to load holidays from the country code using the holidays package
+            # Get holidays from the country code using the holidays package
+            # Use the country_holidays object directly to support lazy loading
             if profile.region:
                 country_holidays = holidays.country_holidays(
                     profile.country_code,
                     subdiv=profile.region
                 )
-                user_holiday_dict.update({date: name for date, name in country_holidays.items()})
                 holiday_sources.append(f"{profile.country_code}/{profile.region}")
             else:
                 country_holidays = holidays.country_holidays(profile.country_code)
-                user_holiday_dict.update({date: name for date, name in country_holidays.items()})
                 holiday_sources.append(profile.country_code)
 
-            # Add custom holidays from the profile
+            # Add custom holidays directly to the country_holidays object
+            # This preserves lazy loading while adding user-specific holidays
             for holiday_str in profile.custom_holidays:
                 holiday_date = parser.parse(holiday_str).date()
-                user_holiday_dict[holiday_date] = "Custom Holiday"
+                country_holidays[holiday_date] = "Custom Holiday"
 
             if profile.custom_holidays:
                 holiday_sources.append(f"{profile.email}")
 
-            # Create a HolidayBase object to store the holidays
-            user_holidays = holidays.HolidayBase()
-            for date, name in user_holiday_dict.items():
-                user_holidays[date] = name
-
             # Note: We don't load calendar files here anymore, as they will be loaded dynamically
             # when calculating compensation based on the shift date
 
-            # Store both the holidays object and the sources of holidays
+            # Store the country_holidays object directly (supports lazy loading)
             self.user_holidays[profile.email] = {
-                'holidays': user_holidays,
+                'holidays': country_holidays,
                 'sources': holiday_sources,
                 'country_code': profile.country_code  # Store country code for later calendar lookup
             }
@@ -1351,6 +1345,9 @@ def fetch_shifts_from_opsgenie(
                 shift_end = pytz.UTC.localize(shift_end)
 
             # Skip shifts outside our requested date range
+            # Include shifts that overlap with our date range:
+            # - Exclude if shift ends before our start date
+            # - Exclude if shift starts after our end date (end_date defaults to 23:59:59 if date-only)
             if shift_end < start_date or shift_start > end_date:
                 continue
 
@@ -1457,9 +1454,16 @@ def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_e
             return
 
     # Initialize the calculator
-    calculator = CompensationCalculator(
-        user_profiles_path=user_profiles if user_profiles and Path(user_profiles).exists() else None
-    )
+    # Validate user profiles file if specified
+    if user_profiles:
+        profiles_path = Path(user_profiles)
+        if not profiles_path.exists():
+            click.echo(f"Error: User profiles file not found: {user_profiles}", err=True)
+            click.echo(f"Please check the file path and try again.", err=True)
+            sys.exit(1)
+        calculator = CompensationCalculator(user_profiles_path=profiles_path)
+    else:
+        calculator = CompensationCalculator(user_profiles_path=None)
 
     # Calculate compensation for each shift
     compensation_periods = []
@@ -1700,6 +1704,13 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
     try:
         start_date_obj = parser.parse(start_date)
         end_date_obj = parser.parse(end_date)
+
+        # If end_date has no time component (defaults to 00:00:00),
+        # set it to end of day (23:59:59) for inclusive behavior
+        if end_date_obj.hour == 0 and end_date_obj.minute == 0 and end_date_obj.second == 0:
+            # Check if user explicitly provided time (by checking if string contains time)
+            if 'T' not in end_date and ':' not in end_date:
+                end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
     except Exception as e:
         click.echo(f"Error parsing dates: {str(e)}", err=True)
         click.echo("Please use YYYY-MM-DD format for dates", err=True)
