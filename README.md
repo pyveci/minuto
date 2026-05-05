@@ -89,6 +89,37 @@ Or using environment variables:
 uv run main.py opsgenie
 ```
 
+### 1b. Fetch Data from Jira Service Management (JSM Ops)
+
+Atlassian migrated OpsGenie to JSM Operations. The `jsm` subcommand reads the same on-call data from the new backend. Schedule UUIDs carry over 1:1, so an existing `OPSGENIE_SCHEDULE_ID` works as the JSM schedule ID without any change.
+
+```bash
+uv run main.py jsm \
+    --cloud-id YOUR_CLOUD_ID --site-host your-org.atlassian.net \
+    --email you@example.com --api-token ATATT... \
+    --schedule-id YOUR_SCHEDULE_ID \
+    --start-date 2025-11-01 --end-date 2026-04-30 \
+    --save-csv shifts.csv
+```
+
+Or using environment variables:
+
+```
+JSM_CLOUD_ID=...                 # Atlassian tenant UUID
+JSM_SITE_HOST=your-org.atlassian.net
+JSM_API_TOKEN_EMAIL=you@example.com
+JSM_API_TOKEN=ATATT...           # https://id.atlassian.com/manage-profile/security/api-tokens
+JSM_SCHEDULE_ID=...              # falls back to OPSGENIE_SCHEDULE_ID if unset
+```
+
+```bash
+uv run main.py jsm --start-date 2025-11-01 --end-date 2026-04-30
+```
+
+Notes:
+- Only `historical` timeline periods are imported. Current and forecast periods are skipped so unserved shifts don't inflate compensation.
+- JSM responses identify users by Atlassian account ID, not email. The script resolves them once per run via the Jira `/rest/api/3/user` endpoint.
+
 ### 2. Process Data from CSV File
 
 If you already have on-call data in a CSV file:

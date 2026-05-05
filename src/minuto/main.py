@@ -1673,7 +1673,7 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
 @cli.command('opsgenie')
 @click.option('--api-token', required=True,
               help='OpsGenie API token',
-              envvar='OPSGENIE_API_TOKEN')
+              envvar=['OPSGENIE_API_TOKEN', 'OPSGENIE_API_KEY'])
 @click.option('--schedule-id', required=True,
               help='OpsGenie schedule ID',
               envvar='OPSGENIE_SCHEDULE_ID')
@@ -1734,6 +1734,77 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
         sys.exit(1)
 
     # Process shifts (calculate compensation, generate reports, etc.)
+    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
+
+
+@cli.command('jsm')
+@click.option('--cloud-id', required=True,
+              help='Atlassian cloud ID (tenant UUID)',
+              envvar='JSM_CLOUD_ID')
+@click.option('--site-host', required=True,
+              help='Atlassian site host, e.g. acme.atlassian.net',
+              envvar='JSM_SITE_HOST')
+@click.option('--email', required=True,
+              help='Atlassian account email paired with the API token',
+              envvar='JSM_API_TOKEN_EMAIL')
+@click.option('--api-token', required=True,
+              help='Atlassian API token (ATATT...)',
+              envvar='JSM_API_TOKEN')
+@click.option('--schedule-id', required=True,
+              help='JSM Ops schedule ID (same UUID as the OpsGenie one)',
+              envvar=['JSM_SCHEDULE_ID', 'OPSGENIE_SCHEDULE_ID'])
+@click.option('--start-date', required=True,
+              help='Start date for fetching on-call data (YYYY-MM-DD format)',
+              envvar=['JSM_START_DATE', 'OPSGENIE_START_DATE'])
+@click.option('--end-date', required=True,
+              help='End date for fetching on-call data (YYYY-MM-DD format)',
+              envvar=['JSM_END_DATE', 'OPSGENIE_END_DATE'])
+@click.option('--save-csv', type=click.Path(path_type=Path),
+              help='Save JSM data to CSV file for future use',
+              envvar='OPSGENIE_SAVE_CSV')
+@click.option('--user-profiles', type=click.Path(path_type=Path),
+              help='Path to user profiles JSON file',
+              envvar='OPSGENIE_USER_PROFILES')
+@click.option('--create-profiles', is_flag=True,
+              help='Create default user profiles file')
+@click.option('--output-plot', type=click.Path(path_type=Path),
+              help='Path to save the daily compensation plot',
+              envvar='OPSGENIE_OUTPUT_PLOT')
+@click.option('--export-excel', type=click.Path(path_type=Path),
+              help='Export the report to an Excel file',
+              envvar='OPSGENIE_EXPORT_EXCEL')
+def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
+                       start_date, end_date, save_csv, user_profiles,
+                       create_profiles, output_plot, export_excel):
+    """Fetch on-call data from JSM Operations API and calculate compensation."""
+    # Deferred to avoid a circular import at module load time
+    # (jsm.py imports OnCallShift from this module).
+    from minuto.jsm import fetch_shifts_from_jsm
+
+    try:
+        start_date_obj = parser.parse(start_date)
+        end_date_obj = parser.parse(end_date)
+        if end_date_obj.hour == 0 and end_date_obj.minute == 0 and end_date_obj.second == 0:
+            if 'T' not in end_date and ':' not in end_date:
+                end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
+    except Exception as e:
+        click.echo(f"Error parsing dates: {str(e)}", err=True)
+        click.echo("Please use YYYY-MM-DD format for dates", err=True)
+        sys.exit(1)
+
+    try:
+        shifts = fetch_shifts_from_jsm(
+            cloud_id, site_host, email, api_token, schedule_id,
+            start_date_obj, end_date_obj,
+        )
+        click.echo(f"Fetched {len(shifts)} shifts from JSM Ops API")
+
+        if save_csv:
+            save_shifts_to_csv(shifts, save_csv)
+    except Exception as e:
+        click.echo(f"Error fetching data from JSM Ops API: {str(e)}", err=True)
+        sys.exit(1)
+
     process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-05-05
+
+### Added
+
+- **JSM Ops support**: New `jsm` CLI subcommand fetches on-call shifts from the post-migration Jira Service Management Operations API. Mirrors the existing `opsgenie` command flag-for-flag and produces identical CSV output for the migration window — verified end-to-end against the live tenant.
+- **`OPSGENIE_API_KEY` envvar fallback**: The `opsgenie` command now reads `OPSGENIE_API_KEY` in addition to `OPSGENIE_API_TOKEN`, aligning env var naming with the rest of the Crate infra tooling.
+
+### Notes
+
+- Schedule UUIDs from OpsGenie carry over 1:1 to JSM, so `JSM_SCHEDULE_ID` defaults to `OPSGENIE_SCHEDULE_ID` when unset.
+- JSM responses contain Atlassian account IDs instead of emails; the new module resolves them via the Jira `/rest/api/3/user` endpoint and caches results per run.
+- Only `type=historical` timeline periods are imported. Current and forecast periods are skipped so unserved shifts don't inflate compensation.
+
 ## 2026-01-05
 
 ### Added

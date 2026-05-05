@@ -1,0 +1,11 @@
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Tooling
+.venv/
+.pytest_cache/
+uv.lock
