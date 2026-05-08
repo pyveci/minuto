@@ -28,6 +28,9 @@ from dateutil import parser
 from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from minuto.jsm import UnresolvedAccountError, fetch_shifts_from_jsm
+from minuto.models import OnCallShift
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -97,20 +100,6 @@ class CompensationPeriod:
     amount: float
     compensation_type: CompensationType
     holiday_info: Optional[Dict[str, str]] = None  # Store holiday name and source if applicable
-
-
-class OnCallShift(BaseModel):
-    """Model for on-call shift data from CSV"""
-    start: datetime
-    end: datetime
-    hours: float
-    user: EmailStr
-
-    @field_validator('start', 'end', mode='before')
-    def parse_datetime(cls, v):
-        if isinstance(v, str):
-            return parser.parse(v)
-        return v
 
 
 class CompensationCalculator:
@@ -1644,6 +1633,26 @@ def cli():
     pass
 
 
+def _parse_window(start_date_str: str, end_date_str: str):
+    """Parse the --start-date / --end-date options used by all fetch commands.
+
+    Date-only --end-date input defaults to end-of-day (23:59:59) so shifts
+    starting later on the end date are inclusive. Exits 1 with a readable
+    error message on parse failure.
+    """
+    try:
+        start = parser.parse(start_date_str)
+        end = parser.parse(end_date_str)
+        if end.hour == 0 and end.minute == 0 and end.second == 0:
+            if 'T' not in end_date_str and ':' not in end_date_str:
+                end = end.replace(hour=23, minute=59, second=59)
+        return start, end
+    except Exception as e:
+        click.echo(f"Error parsing dates: {str(e)}", err=True)
+        click.echo("Please use YYYY-MM-DD format for dates", err=True)
+        sys.exit(1)
+
+
 @cli.command('csv')
 @click.argument('csv_file', type=click.Path(exists=True, path_type=Path),
                 envvar='OPSGENIE_CSV_FILE')
@@ -1673,7 +1682,7 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
 @cli.command('opsgenie')
 @click.option('--api-token', required=True,
               help='OpsGenie API token',
-              envvar='OPSGENIE_API_TOKEN')
+              envvar=['OPSGENIE_API_TOKEN', 'OPSGENIE_API_KEY'])
 @click.option('--schedule-id', required=True,
               help='OpsGenie schedule ID',
               envvar='OPSGENIE_SCHEDULE_ID')
@@ -1700,21 +1709,7 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
 def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_csv,
                             user_profiles, create_profiles, output_plot, export_excel):
     """Fetch on-call data from OpsGenie API and calculate compensation."""
-    # Parse dates
-    try:
-        start_date_obj = parser.parse(start_date)
-        end_date_obj = parser.parse(end_date)
-
-        # If end_date has no time component (defaults to 00:00:00),
-        # set it to end of day (23:59:59) for inclusive behavior
-        if end_date_obj.hour == 0 and end_date_obj.minute == 0 and end_date_obj.second == 0:
-            # Check if user explicitly provided time (by checking if string contains time)
-            if 'T' not in end_date and ':' not in end_date:
-                end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
-    except Exception as e:
-        click.echo(f"Error parsing dates: {str(e)}", err=True)
-        click.echo("Please use YYYY-MM-DD format for dates", err=True)
-        sys.exit(1)
+    start_date_obj, end_date_obj = _parse_window(start_date, end_date)
 
     # Fetch shifts from OpsGenie API
     try:
@@ -1734,6 +1729,85 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
         sys.exit(1)
 
     # Process shifts (calculate compensation, generate reports, etc.)
+    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
+
+
+@cli.command('jsm')
+@click.option('--cloud-id', required=True,
+              help='Atlassian cloud ID (tenant UUID)',
+              envvar='JSM_CLOUD_ID')
+@click.option('--site-host', required=True,
+              help='Atlassian site host, e.g. acme.atlassian.net',
+              envvar='JSM_SITE_HOST')
+@click.option('--email', required=True,
+              help='Atlassian account email paired with the API token',
+              envvar='JSM_API_TOKEN_EMAIL')
+@click.option('--api-token', required=True,
+              help='Atlassian API token (ATATT...)',
+              envvar='JSM_API_TOKEN')
+@click.option('--schedule-id', required=True,
+              help='JSM Ops schedule ID (same UUID as the OpsGenie one)',
+              envvar=['JSM_SCHEDULE_ID', 'OPSGENIE_SCHEDULE_ID'])
+@click.option('--start-date', required=True,
+              help='Start date for fetching on-call data (YYYY-MM-DD format)',
+              envvar=['JSM_START_DATE', 'OPSGENIE_START_DATE'])
+@click.option('--end-date', required=True,
+              help='End date for fetching on-call data (YYYY-MM-DD format)',
+              envvar=['JSM_END_DATE', 'OPSGENIE_END_DATE'])
+@click.option('--save-csv', type=click.Path(path_type=Path),
+              help='Save JSM data to CSV file for future use',
+              envvar=['JSM_SAVE_CSV', 'OPSGENIE_SAVE_CSV'])
+@click.option('--user-profiles', type=click.Path(path_type=Path),
+              help='Path to user profiles JSON file',
+              envvar=['JSM_USER_PROFILES', 'OPSGENIE_USER_PROFILES'])
+@click.option('--create-profiles', is_flag=True,
+              help='Create default user profiles file')
+@click.option('--output-plot', type=click.Path(path_type=Path),
+              help='Path to save the daily compensation plot',
+              envvar=['JSM_OUTPUT_PLOT', 'OPSGENIE_OUTPUT_PLOT'])
+@click.option('--export-excel', type=click.Path(path_type=Path),
+              help='Export the report to an Excel file',
+              envvar=['JSM_EXPORT_EXCEL', 'OPSGENIE_EXPORT_EXCEL'])
+@click.option('--historical-only', is_flag=True,
+              help='Skip active and forecast periods (only count served shifts). '
+                   'Recommended for mid-period payroll runs.',
+              envvar='JSM_HISTORICAL_ONLY')
+def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
+                       start_date, end_date, save_csv, user_profiles,
+                       create_profiles, output_plot, export_excel,
+                       historical_only):
+    """Fetch on-call data from JSM Operations API and calculate compensation."""
+    start_date_obj, end_date_obj = _parse_window(start_date, end_date)
+
+    try:
+        shifts = fetch_shifts_from_jsm(
+            cloud_id, site_host, email, api_token, schedule_id,
+            start_date_obj, end_date_obj,
+            historical_only=historical_only,
+        )
+        click.echo(f"Fetched {len(shifts)} shifts from JSM Ops API")
+
+        if save_csv:
+            save_shifts_to_csv(shifts, save_csv)
+    except UnresolvedAccountError as e:
+        click.echo(
+            f"Error: could not resolve {len(e.account_ids)} user account ID(s) "
+            "to email addresses:", err=True,
+        )
+        for account_id in e.account_ids:
+            click.echo(f"  - {account_id}", err=True)
+        click.echo(
+            "\nThe API token likely lacks the privacy scope to read these "
+            "users' email, or the users have hidden their email in their "
+            "Atlassian profile. Either grant the scope, use an admin token, "
+            "or have the affected users update their visibility setting.",
+            err=True,
+        )
+        sys.exit(2)
+    except Exception as e:
+        click.echo(f"Error fetching data from JSM Ops API: {str(e)}", err=True)
+        sys.exit(1)
+
     process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
 
 

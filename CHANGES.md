@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-05-05
+
+### Added
+
+- **JSM Ops support**: New `jsm` CLI subcommand fetches on-call shifts from the post-migration Jira Service Management Operations API. Mirrors the existing `opsgenie` command flag-for-flag and produces identical CSV output for the migration window — verified end-to-end against the live tenant.
+- **`--historical-only` flag** on the `jsm` command: skips `active` and `forecast` periods (only counts shifts that have actually been served). Recommended for mid-period payroll runs. Default behavior includes all periods overlapping the window, matching the `opsgenie` command.
+- **`OPSGENIE_API_KEY` envvar fallback**: The `opsgenie` command now reads `OPSGENIE_API_KEY` in addition to `OPSGENIE_API_TOKEN`, aligning env var naming with the rest of the Crate infra tooling. README now documents both names.
+- **`JSM_*` envvars for JSM command options**: `JSM_SAVE_CSV`, `JSM_USER_PROFILES`, `JSM_OUTPUT_PLOT`, `JSM_EXPORT_EXCEL`, `JSM_HISTORICAL_ONLY` are now recognized, each falling back to the `OPSGENIE_*` equivalent when unset. Lets users adopt JSM-only naming without reusing OpsGenie env vars.
+
+### Changed
+
+- **Unresolved-user handling is now fail-fast**: if any Atlassian account ID returned by JSM can't be resolved to an email (e.g. API token lacks the privacy scope, or the user has hidden their email), the command exits non-zero with the full list of unresolved IDs. Previously a placeholder email was substituted, which risked landing fake users in compensation reports.
+- **`OnCallShift` moved to `src/minuto/models.py`**: the data-exchange model now lives in its own module so source-specific clients can import it without going through `main`. Eliminates the deferred-import workaround that the JSM command was using. `from minuto.main import OnCallShift` continues to work via re-export — no change needed in tests or external consumers.
+- **CLI date-window parsing extracted to `_parse_window`**: the `--start-date` / `--end-date` parsing logic (including the end-of-day default for date-only input) is now a single helper used by both `opsgenie` and `jsm` commands, instead of being duplicated.
+
+### Notes
+
+- Schedule UUIDs from OpsGenie carry over 1:1 to JSM, so `JSM_SCHEDULE_ID` defaults to `OPSGENIE_SCHEDULE_ID` when unset.
+- JSM responses contain Atlassian account IDs instead of emails; the new module resolves them via the Jira `/rest/api/3/user` endpoint, in a single pre-pass so unresolvable users surface together rather than failing one at a time.
+
 ## 2026-01-05
 
 ### Added
