@@ -12,6 +12,8 @@
 ### Changed
 
 - **Unresolved-user handling is now fail-fast**: if any Atlassian account ID returned by JSM can't be resolved to an email (e.g. API token lacks the privacy scope, or the user has hidden their email), the command exits non-zero with the full list of unresolved IDs. Previously a placeholder email was substituted, which risked landing fake users in compensation reports.
+- **`OnCallShift` moved to `src/minuto/models.py`**: the data-exchange model now lives in its own module so source-specific clients can import it without going through `main`. Eliminates the deferred-import workaround that the JSM command was using. `from minuto.main import OnCallShift` continues to work via re-export — no change needed in tests or external consumers.
+- **CLI date-window parsing extracted to `_parse_window`**: the `--start-date` / `--end-date` parsing logic (including the end-of-day default for date-only input) is now a single helper used by both `opsgenie` and `jsm` commands, instead of being duplicated.
 
 ### Notes
 

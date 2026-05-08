@@ -21,7 +21,7 @@ import pytz
 import requests
 from dateutil import parser
 
-from minuto.main import OnCallShift
+from minuto.models import OnCallShift
 
 logger = logging.getLogger(__name__)
 

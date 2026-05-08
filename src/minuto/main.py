@@ -28,6 +28,9 @@ from dateutil import parser
 from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from minuto.jsm import UnresolvedAccountError, fetch_shifts_from_jsm
+from minuto.models import OnCallShift
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -97,20 +100,6 @@ class CompensationPeriod:
     amount: float
     compensation_type: CompensationType
     holiday_info: Optional[Dict[str, str]] = None  # Store holiday name and source if applicable
-
-
-class OnCallShift(BaseModel):
-    """Model for on-call shift data from CSV"""
-    start: datetime
-    end: datetime
-    hours: float
-    user: EmailStr
-
-    @field_validator('start', 'end', mode='before')
-    def parse_datetime(cls, v):
-        if isinstance(v, str):
-            return parser.parse(v)
-        return v
 
 
 class CompensationCalculator:
@@ -1644,6 +1633,26 @@ def cli():
     pass
 
 
+def _parse_window(start_date_str: str, end_date_str: str):
+    """Parse the --start-date / --end-date options used by all fetch commands.
+
+    Date-only --end-date input defaults to end-of-day (23:59:59) so shifts
+    starting later on the end date are inclusive. Exits 1 with a readable
+    error message on parse failure.
+    """
+    try:
+        start = parser.parse(start_date_str)
+        end = parser.parse(end_date_str)
+        if end.hour == 0 and end.minute == 0 and end.second == 0:
+            if 'T' not in end_date_str and ':' not in end_date_str:
+                end = end.replace(hour=23, minute=59, second=59)
+        return start, end
+    except Exception as e:
+        click.echo(f"Error parsing dates: {str(e)}", err=True)
+        click.echo("Please use YYYY-MM-DD format for dates", err=True)
+        sys.exit(1)
+
+
 @cli.command('csv')
 @click.argument('csv_file', type=click.Path(exists=True, path_type=Path),
                 envvar='OPSGENIE_CSV_FILE')
@@ -1700,21 +1709,7 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
 def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_csv,
                             user_profiles, create_profiles, output_plot, export_excel):
     """Fetch on-call data from OpsGenie API and calculate compensation."""
-    # Parse dates
-    try:
-        start_date_obj = parser.parse(start_date)
-        end_date_obj = parser.parse(end_date)
-
-        # If end_date has no time component (defaults to 00:00:00),
-        # set it to end of day (23:59:59) for inclusive behavior
-        if end_date_obj.hour == 0 and end_date_obj.minute == 0 and end_date_obj.second == 0:
-            # Check if user explicitly provided time (by checking if string contains time)
-            if 'T' not in end_date and ':' not in end_date:
-                end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
-    except Exception as e:
-        click.echo(f"Error parsing dates: {str(e)}", err=True)
-        click.echo("Please use YYYY-MM-DD format for dates", err=True)
-        sys.exit(1)
+    start_date_obj, end_date_obj = _parse_window(start_date, end_date)
 
     # Fetch shifts from OpsGenie API
     try:
@@ -1782,20 +1777,7 @@ def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
                        create_profiles, output_plot, export_excel,
                        historical_only):
     """Fetch on-call data from JSM Operations API and calculate compensation."""
-    # Deferred to avoid a circular import at module load time
-    # (jsm.py imports OnCallShift from this module).
-    from minuto.jsm import fetch_shifts_from_jsm, UnresolvedAccountError
-
-    try:
-        start_date_obj = parser.parse(start_date)
-        end_date_obj = parser.parse(end_date)
-        if end_date_obj.hour == 0 and end_date_obj.minute == 0 and end_date_obj.second == 0:
-            if 'T' not in end_date and ':' not in end_date:
-                end_date_obj = end_date_obj.replace(hour=23, minute=59, second=59)
-    except Exception as e:
-        click.echo(f"Error parsing dates: {str(e)}", err=True)
-        click.echo("Please use YYYY-MM-DD format for dates", err=True)
-        sys.exit(1)
+    start_date_obj, end_date_obj = _parse_window(start_date, end_date)
 
     try:
         shifts = fetch_shifts_from_jsm(
