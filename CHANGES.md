@@ -5,13 +5,18 @@
 ### Added
 
 - **JSM Ops support**: New `jsm` CLI subcommand fetches on-call shifts from the post-migration Jira Service Management Operations API. Mirrors the existing `opsgenie` command flag-for-flag and produces identical CSV output for the migration window — verified end-to-end against the live tenant.
-- **`OPSGENIE_API_KEY` envvar fallback**: The `opsgenie` command now reads `OPSGENIE_API_KEY` in addition to `OPSGENIE_API_TOKEN`, aligning env var naming with the rest of the Crate infra tooling.
+- **`--historical-only` flag** on the `jsm` command: skips `active` and `forecast` periods (only counts shifts that have actually been served). Recommended for mid-period payroll runs. Default behavior includes all periods overlapping the window, matching the `opsgenie` command.
+- **`OPSGENIE_API_KEY` envvar fallback**: The `opsgenie` command now reads `OPSGENIE_API_KEY` in addition to `OPSGENIE_API_TOKEN`, aligning env var naming with the rest of the Crate infra tooling. README now documents both names.
+- **`JSM_*` envvars for JSM command options**: `JSM_SAVE_CSV`, `JSM_USER_PROFILES`, `JSM_OUTPUT_PLOT`, `JSM_EXPORT_EXCEL`, `JSM_HISTORICAL_ONLY` are now recognized, each falling back to the `OPSGENIE_*` equivalent when unset. Lets users adopt JSM-only naming without reusing OpsGenie env vars.
+
+### Changed
+
+- **Unresolved-user handling is now fail-fast**: if any Atlassian account ID returned by JSM can't be resolved to an email (e.g. API token lacks the privacy scope, or the user has hidden their email), the command exits non-zero with the full list of unresolved IDs. Previously a placeholder email was substituted, which risked landing fake users in compensation reports.
 
 ### Notes
 
 - Schedule UUIDs from OpsGenie carry over 1:1 to JSM, so `JSM_SCHEDULE_ID` defaults to `OPSGENIE_SCHEDULE_ID` when unset.
-- JSM responses contain Atlassian account IDs instead of emails; the new module resolves them via the Jira `/rest/api/3/user` endpoint and caches results per run.
-- Only `type=historical` timeline periods are imported. Current and forecast periods are skipped so unserved shifts don't inflate compensation.
+- JSM responses contain Atlassian account IDs instead of emails; the new module resolves them via the Jira `/rest/api/3/user` endpoint, in a single pre-pass so unresolvable users surface together rather than failing one at a time.
 
 ## 2026-01-05
 

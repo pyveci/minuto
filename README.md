@@ -46,7 +46,7 @@ You can configure the tool using environment variables in a `.env` file:
 
 ```
 # OpsGenie API configuration
-OPSGENIE_API_TOKEN=your-api-token-here
+OPSGENIE_API_TOKEN=your-api-token-here   # OPSGENIE_API_KEY also accepted
 OPSGENIE_SCHEDULE_ID=your-schedule-id-here
 OPSGENIE_START_DATE=2025-01-01
 OPSGENIE_END_DATE=2025-05-09
@@ -110,6 +110,13 @@ JSM_SITE_HOST=your-org.atlassian.net
 JSM_API_TOKEN_EMAIL=you@example.com
 JSM_API_TOKEN=ATATT...           # https://id.atlassian.com/manage-profile/security/api-tokens
 JSM_SCHEDULE_ID=...              # falls back to OPSGENIE_SCHEDULE_ID if unset
+
+# Optional — JSM-specific envvars; each falls back to OPSGENIE_<NAME> if unset
+JSM_SAVE_CSV=shifts.csv
+JSM_USER_PROFILES=user_profiles.json
+JSM_OUTPUT_PLOT=compensation_chart.png
+JSM_EXPORT_EXCEL=shifts.xlsx
+JSM_HISTORICAL_ONLY=1            # equivalent to --historical-only
 ```
 
 ```bash
@@ -117,8 +124,8 @@ uv run main.py jsm --start-date 2025-11-01 --end-date 2026-04-30
 ```
 
 Notes:
-- Only `historical` timeline periods are imported. Current and forecast periods are skipped so unserved shifts don't inflate compensation.
-- JSM responses identify users by Atlassian account ID, not email. The script resolves them once per run via the Jira `/rest/api/3/user` endpoint.
+- By default, all timeline periods overlapping the window are imported (matching the `opsgenie` command's behavior). Pass `--historical-only` to skip `active` and `forecast` periods — recommended for mid-period payroll runs so unserved shifts don't get paid.
+- JSM responses identify users by Atlassian account ID, not email. The script resolves them once per run via the Jira `/rest/api/3/user` endpoint. If any account can't be resolved (e.g. because the API token lacks the privacy scope or the user has hidden their email), the command exits non-zero and lists every unresolved ID at once — no placeholders end up in compensation reports.
 
 ### 2. Process Data from CSV File
 
@@ -184,7 +191,7 @@ uv run main.py csv shifts.csv --user-profiles user_profiles.json --output-plot c
 1. Create a `.env` file with your configuration:
 
 ```
-OPSGENIE_API_TOKEN=your-token
+OPSGENIE_API_TOKEN=your-token   # OPSGENIE_API_KEY also accepted
 OPSGENIE_SCHEDULE_ID=your-schedule-id
 OPSGENIE_START_DATE=2025-01-01
 OPSGENIE_END_DATE=2025-05-09

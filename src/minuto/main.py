@@ -1761,25 +1761,30 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
               envvar=['JSM_END_DATE', 'OPSGENIE_END_DATE'])
 @click.option('--save-csv', type=click.Path(path_type=Path),
               help='Save JSM data to CSV file for future use',
-              envvar='OPSGENIE_SAVE_CSV')
+              envvar=['JSM_SAVE_CSV', 'OPSGENIE_SAVE_CSV'])
 @click.option('--user-profiles', type=click.Path(path_type=Path),
               help='Path to user profiles JSON file',
-              envvar='OPSGENIE_USER_PROFILES')
+              envvar=['JSM_USER_PROFILES', 'OPSGENIE_USER_PROFILES'])
 @click.option('--create-profiles', is_flag=True,
               help='Create default user profiles file')
 @click.option('--output-plot', type=click.Path(path_type=Path),
               help='Path to save the daily compensation plot',
-              envvar='OPSGENIE_OUTPUT_PLOT')
+              envvar=['JSM_OUTPUT_PLOT', 'OPSGENIE_OUTPUT_PLOT'])
 @click.option('--export-excel', type=click.Path(path_type=Path),
               help='Export the report to an Excel file',
-              envvar='OPSGENIE_EXPORT_EXCEL')
+              envvar=['JSM_EXPORT_EXCEL', 'OPSGENIE_EXPORT_EXCEL'])
+@click.option('--historical-only', is_flag=True,
+              help='Skip active and forecast periods (only count served shifts). '
+                   'Recommended for mid-period payroll runs.',
+              envvar='JSM_HISTORICAL_ONLY')
 def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
                        start_date, end_date, save_csv, user_profiles,
-                       create_profiles, output_plot, export_excel):
+                       create_profiles, output_plot, export_excel,
+                       historical_only):
     """Fetch on-call data from JSM Operations API and calculate compensation."""
     # Deferred to avoid a circular import at module load time
     # (jsm.py imports OnCallShift from this module).
-    from minuto.jsm import fetch_shifts_from_jsm
+    from minuto.jsm import fetch_shifts_from_jsm, UnresolvedAccountError
 
     try:
         start_date_obj = parser.parse(start_date)
@@ -1796,11 +1801,27 @@ def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
         shifts = fetch_shifts_from_jsm(
             cloud_id, site_host, email, api_token, schedule_id,
             start_date_obj, end_date_obj,
+            historical_only=historical_only,
         )
         click.echo(f"Fetched {len(shifts)} shifts from JSM Ops API")
 
         if save_csv:
             save_shifts_to_csv(shifts, save_csv)
+    except UnresolvedAccountError as e:
+        click.echo(
+            f"Error: could not resolve {len(e.account_ids)} user account ID(s) "
+            "to email addresses:", err=True,
+        )
+        for account_id in e.account_ids:
+            click.echo(f"  - {account_id}", err=True)
+        click.echo(
+            "\nThe API token likely lacks the privacy scope to read these "
+            "users' email, or the users have hidden their email in their "
+            "Atlassian profile. Either grant the scope, use an admin token, "
+            "or have the affected users update their visibility setting.",
+            err=True,
+        )
+        sys.exit(2)
     except Exception as e:
         click.echo(f"Error fetching data from JSM Ops API: {str(e)}", err=True)
         sys.exit(1)
