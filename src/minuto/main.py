@@ -43,6 +43,16 @@ NIGHT_SHORT_SHIFT_RATE = 11.12  # Euro fixed rate
 NIGHT_START_HOUR = 22  # 10 PM
 NIGHT_END_HOUR = 6    # 6 AM
 
+# Monthly pre-pay (Pauschale) — set yearly by collective agreement / law.
+# Update at year boundary. Referenced by name `PrePay` in the Excel export.
+MONTHLY_PREPAY_AMOUNT = 510.0
+
+# Excel export number formats
+XLSX_MONEY_FORMAT = '€ #,##0.00'
+XLSX_HOURS_FORMAT = '0.00'
+XLSX_DATE_FORMAT = 'yyyy-mm-dd'
+XLSX_DATETIME_FORMAT = 'yyyy-mm-dd hh:mm'
+
 # OpsGenie API constants
 OPSGENIE_API_URL = "https://api.opsgenie.com/v2/schedules/{schedule_id}/timeline"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -1069,192 +1079,273 @@ class CompensationReport:
             plt.show()
 
     def export_to_excel(self, output_path: Path):
-        """Export the compensation report to an Excel file"""
+        """Export the compensation report to an Excel file with live formulas.
+
+        Sheets (top-down): Overview → Monthly Per User → Daily Summary → Detailed Shifts.
+        All aggregated values are live Excel formulas (=SUM, =SUMIFS, =SUBTOTAL) over
+        named tables, so HR can audit every number by clicking on it.
+        """
         if self.df.empty:
             print("No data to export")
             return
 
-        # Force pandas to convert all datetime objects to strings to avoid timezone issues
-        def ensure_no_datetimes(df):
-            """Convert all datetime columns to strings to avoid timezone issues with Excel"""
-            df_copy = df.copy()
-            for col in df_copy.columns:
+        with pd.ExcelWriter(output_path, engine='xlsxwriter',
+                            datetime_format=XLSX_DATETIME_FORMAT,
+                            date_format=XLSX_DATE_FORMAT) as writer:
+            wb = writer.book
+            fmt = {
+                'money':    wb.add_format({'num_format': XLSX_MONEY_FORMAT}),
+                'hours':    wb.add_format({'num_format': XLSX_HOURS_FORMAT}),
+                'date':     wb.add_format({'num_format': XLSX_DATE_FORMAT}),
+                'datetime': wb.add_format({'num_format': XLSX_DATETIME_FORMAT}),
+                'h1':       wb.add_format({'bold': True, 'font_size': 14}),
+                'h2':       wb.add_format({'bold': True, 'font_size': 11, 'bottom': 1}),
+                'label':    wb.add_format({'bold': True}),
+                'note':     wb.add_format({'italic': True, 'font_color': '#666666'}),
+            }
 
-                # Convert all datetime columns to string format
-                if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
-                    # Full datetime columns: convert to string in a readable format
-                    if col in ['Start', 'End']:
-                        df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M')
-                    # Just date columns: convert to string in YYYY-MM-DD format
-                    elif col == 'Date':
-                        df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
-                    # Any other datetime column: convert to string in a standard format
-                    else:
-                        df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-                # Handle potential Series with datetime objects
-                elif pd.api.types.is_object_dtype(df_copy[col]):
-                    if df_copy[col].apply(lambda x: isinstance(x, datetime)).any():
-                        df_copy[col] = df_copy[col].apply(lambda x:
-                            x.strftime('%Y-%m-%d %H:%M') if isinstance(x, datetime) else x)
-            return df_copy
-
-        # Create a new Excel writer
-        with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-            # Get the workbook and add formats
-            workbook = writer.book
-            header_format = workbook.add_format({
-                'bold': True,
-                'text_wrap': True,
-                'valign': 'top',
-                'fg_color': '#D7E4BC',
-                'border': 1
-            })
-
-            money_format = workbook.add_format({'num_format': '€#,##0.00'})
-
-            # Create detailed shifts sheet
-            detailed_df = ensure_no_datetimes(self.df)
-            detailed_df.to_excel(writer, sheet_name='Detailed Shifts', index=False)
-
-            # Apply formats to the sheet
-            worksheet = writer.sheets['Detailed Shifts']
-            for col_num, value in enumerate(detailed_df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-
-            # Auto-adjust columns width
-            for i, col in enumerate(detailed_df.columns):
-                column_length = detailed_df[col].astype(str).map(len)
-                # Handle empty dataframes or columns
-                max_length = column_length.max() if not column_length.empty else 0
-                column_width = max(max_length, len(str(col))) + 2
-                worksheet.set_column(i, i, column_width)
-
-            # Add daily summary sheet
-            daily_summary = ensure_no_datetimes(self.get_daily_summary())
-            if not daily_summary.empty:
-                daily_summary.to_excel(writer, sheet_name='Daily Summary', index=False)
-
-                # Apply formats
-                worksheet = writer.sheets['Daily Summary']
-                for col_num, value in enumerate(daily_summary.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-
-                # Format the Amount column as money
-                amount_col = daily_summary.columns.get_loc('Amount')
-                worksheet.set_column(amount_col, amount_col, None, money_format)
-
-                # Auto-adjust columns width
-                for i, col in enumerate(daily_summary.columns):
-                    column_length = daily_summary[col].astype(str).map(len)
-                    max_length = column_length.max() if not column_length.empty else 0
-                    column_width = max(max_length, len(str(col))) + 2
-                    worksheet.set_column(i, i, column_width)
-
-            # Add user-month totals sheet with prepaid calculation
-            user_month_totals = ensure_no_datetimes(self.get_user_month_totals())
-            if not user_month_totals.empty:
-                # Add columns for pre-paid and final amount calculation
-                user_month_df = user_month_totals.copy()
-
-                # Apply pre-paid amount based on eligibility
-                user_month_df['Pre-Paid Amount'] = user_month_df.apply(
-                    lambda row: 510.0 if row['PrePaymentEligible'] else 0.0, axis=1
-                )
-
-                user_month_df['Final Amount'] = user_month_df.apply(
-                    lambda row: max(0, row['Amount'] - row['Pre-Paid Amount']), axis=1
-                )
-
-                # Add Month Name column for better readability
-                user_month_df['Month Name'] = user_month_df['Year-Month'].apply(
-                    lambda ym: datetime(int(ym.split('-')[0]), int(ym.split('-')[1]), 1).strftime('%B %Y')
-                )
-
-                # Add eligibility indicator
-                user_month_df['Eligible'] = user_month_df['PrePaymentEligible'].apply(
-                    lambda eligible: 'Yes' if eligible else 'No'
-                )
-
-                # Reorder columns
-                user_month_df = user_month_df[['User', 'Year-Month', 'Month Name', 'Eligible', 'Compensated Hours',
-                                              'Amount', 'Pre-Paid Amount', 'Final Amount']]
-
-                user_month_df.to_excel(writer, sheet_name='User Month Totals', index=False)
-
-                # Apply formats
-                worksheet = writer.sheets['User Month Totals']
-                for col_num, value in enumerate(user_month_df.columns.values):
-                    worksheet.write(0, col_num, value, header_format)
-
-                # Format money columns
-                for col in ['Amount', 'Pre-Paid Amount', 'Final Amount']:
-                    col_idx = user_month_df.columns.get_loc(col)
-                    worksheet.set_column(col_idx, col_idx, None, money_format)
-
-                # Auto-adjust columns width
-                for i, col in enumerate(user_month_df.columns):
-                    column_length = user_month_df[col].astype(str).map(len)
-                    max_length = column_length.max() if not column_length.empty else 0
-                    column_width = max(max_length, len(str(col))) + 2
-                    worksheet.set_column(i, i, column_width)
-
-                # Add user totals
-                user_totals = ensure_no_datetimes(self.get_user_totals())
-                if not user_totals.empty:
-                    # Calculate rows in user_month sheet to know where to place the totals
-                    start_row = len(user_month_df) + 3
-                    worksheet.write(start_row - 1, 0, "USER TOTALS", header_format)
-
-                    # Write user totals with proper formatting
-                    for i, (idx, row) in enumerate(user_totals.iterrows()):
-                        worksheet.write(start_row + i, 0, row['User'])
-                        worksheet.write(start_row + i, 3, row['Compensated Hours'])
-                        worksheet.write(start_row + i, 4, row['Amount'], money_format)
-
-            # Add a summary sheet
-            summary_data = []
-            # Get grand total
-            grand_total = self.get_grand_total()
-            summary_data.append(["Grand Total Amount", grand_total])
-
-            # Get hours breakdown
-            hours_breakdown = self.get_hours_breakdown()
-            summary_data.append(["Total Compensated Hours", hours_breakdown['total_hours']])
-            summary_data.append(["Workday Hours (outside working hours)", hours_breakdown['workday_hours']])
-            summary_data.append(["Weekend Hours", hours_breakdown['weekend_hours']])
-            summary_data.append(["Holiday Hours", hours_breakdown['holiday_hours']])
-
-            # Calculate total pre-paid amount
-            if not user_month_totals.empty:
-                unique_user_months = len(user_month_totals.groupby(['User', 'Year-Month']))
-                total_prepaid = 510.0 * unique_user_months
-                summary_data.append(["Total Pre-Paid Amount", total_prepaid])
-                summary_data.append(["Additional Compensation", max(0, grand_total - total_prepaid)])
-
-            # Create the summary sheet
-            summary_df = pd.DataFrame(summary_data, columns=['Description', 'Value'])
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-
-            # Apply formats to summary sheet
-            worksheet = writer.sheets['Summary']
-            for col_num, value in enumerate(summary_df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-
-            # Format the Value column based on type
-            for i, row in summary_df.iterrows():
-                if "Hours" in row['Description']:
-                    worksheet.write(i + 1, 1, row['Value'])
-                else:
-                    worksheet.write(i + 1, 1, row['Value'], money_format)
-
-            # Auto-adjust columns width
-            for i, col in enumerate(summary_df.columns):
-                column_length = summary_df[col].astype(str).map(len)
-                max_length = column_length.max() if not column_length.empty else 0
-                column_width = max(max_length, len(str(col))) + 2
-                worksheet.set_column(i, i, column_width)
+            self._write_overview(wb, fmt)               # written first, but populated last
+            self._write_monthly(writer, fmt)            # tbl_monthly
+            self._write_daily(writer, fmt)              # tbl_daily
+            self._write_detailed(writer, fmt)           # tbl_shifts
+            self._populate_overview(wb, fmt)            # references tables, so do last
 
         print(f"Compensation report exported to: {output_path}")
+
+    # ---------- Excel export helpers ----------
+
+    @staticmethod
+    def _strip_tz(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        """Return df with tz stripped from given datetime columns (Excel needs naive)."""
+        df = df.copy()
+        for c in cols:
+            if c not in df.columns or not pd.api.types.is_datetime64_any_dtype(df[c]):
+                continue
+            if df[c].dt.tz is not None:
+                df[c] = df[c].dt.tz_localize(None)
+        return df
+
+    def _detailed_df(self) -> pd.DataFrame:
+        """Detailed shifts enriched with helper columns for SUMIFS in other sheets."""
+        df = self._strip_tz(self.df, ['Start', 'End'])
+        df['Date'] = pd.to_datetime(df['Date'])
+        # Year-Month derived from Date so it matches tbl_monthly's grouping (see
+        # get_user_month_totals); SUMIFS in the monthly sheet relies on this alignment.
+        df['Year-Month'] = df['Date'].dt.strftime('%Y-%m')
+        df['Day'] = df['Date'].dt.day_name()
+        df['Is Weekend'] = df['Date'].dt.dayofweek >= 5
+        # Booleans must be real bool for SUMIFS criterion TRUE/FALSE
+        df['Is Holiday'] = df['Is Holiday'].astype(bool)
+        return df
+
+    def _write_table(self, ws, df: pd.DataFrame, *, table_name: str,
+                     columns: List[Dict], fmt: Dict, totals_label: Optional[str] = None):
+        """Write df as a native Excel Table at A1.
+
+        columns: list of dicts. Each dict supports:
+          header        column header text (also df key if 'df_col' missing)
+          df_col        df column to read from (default: header)
+          format        xlsxwriter Format key in `fmt` (e.g. 'money')
+          formula       formula template; '{r}' is the 1-indexed Excel data row
+          total         'sum'|'count'|'average'|… for the totals row
+          width         explicit column width
+        """
+        n = len(df)
+        n_cols = len(columns)
+        has_totals = totals_label is not None or any(c.get('total') for c in columns)
+        last_row = n + (1 if has_totals else 0)
+
+        cols_spec = []
+        for c in columns:
+            spec = {'header': c['header']}
+            if c.get('total'):
+                spec['total_function'] = c['total']
+            cols_spec.append(spec)
+        if totals_label and cols_spec:
+            cols_spec[0]['total_string'] = totals_label
+
+        ws.add_table(0, 0, last_row, n_cols - 1, {
+            'name': table_name,
+            'columns': cols_spec,
+            'style': 'Table Style Medium 2',
+            'banded_rows': True,
+            'autofilter': True,
+            'total_row': has_totals,
+        })
+
+        for r, (_, row) in enumerate(df.iterrows(), start=1):
+            for c_idx, c in enumerate(columns):
+                cell_fmt = fmt.get(c['format']) if 'format' in c else None
+                if 'formula' in c:
+                    ws.write_formula(r, c_idx, c['formula'].format(r=r + 1), cell_fmt)
+                    continue
+                key = c.get('df_col', c['header'])
+                value = row[key] if key in df.columns else None
+                if pd.isna(value):
+                    ws.write_blank(r, c_idx, None, cell_fmt)
+                else:
+                    ws.write(r, c_idx, value, cell_fmt)
+
+        for c_idx, c in enumerate(columns):
+            key = c.get('df_col', c['header'])
+            if 'width' in c:
+                width = c['width']
+            elif key in df.columns and not df[key].empty:
+                body_max = df[key].fillna('').astype(str).str.len().max() or 0
+                width = max(len(str(c['header'])), int(body_max)) + 2
+            else:
+                width = max(len(str(c['header'])) + 2, 12)
+            ws.set_column(c_idx, c_idx, min(width, 40),
+                          fmt.get(c['format']) if 'format' in c else None)
+
+        ws.freeze_panes(1, 0)
+        ws.set_landscape()
+        ws.fit_to_pages(1, 0)
+        ws.repeat_rows(0)
+        ws.set_footer('&L&A&CPage &P of &N&R&D')
+
+    def _write_detailed(self, writer, fmt):
+        df = self._detailed_df()
+        ws = writer.book.add_worksheet('Detailed Shifts')
+        writer.sheets['Detailed Shifts'] = ws
+        cols = [
+            {'header': 'User'},
+            {'header': 'Date', 'format': 'date'},
+            {'header': 'Start', 'format': 'datetime'},
+            {'header': 'End', 'format': 'datetime'},
+            {'header': 'Day'},
+            {'header': 'Year-Month'},
+            {'header': 'Hours', 'format': 'hours', 'total': 'sum'},
+            {'header': 'Compensated Hours', 'format': 'hours', 'total': 'sum'},
+            {'header': 'Amount', 'format': 'money', 'total': 'sum'},
+            {'header': 'Compensation Type'},
+            {'header': 'Is Holiday'},
+            {'header': 'Is Weekend'},
+            {'header': 'Holiday Name'},
+            {'header': 'Holiday Source'},
+        ]
+        self._write_table(ws, df, table_name='tbl_shifts',
+                          columns=cols, fmt=fmt, totals_label='Total')
+
+        # Subtle highlights so HR can scan for special days
+        n = len(df)
+        if n:
+            holiday_fmt = writer.book.add_format({'bg_color': '#FFF3CD'})  # light yellow
+            weekend_fmt = writer.book.add_format({'bg_color': '#E8E8E8'})  # light gray
+            data_range = f'A2:N{n + 1}'
+            ws.conditional_format(data_range, {
+                'type': 'formula', 'criteria': '=$K2=TRUE', 'format': holiday_fmt})
+            ws.conditional_format(data_range, {
+                'type': 'formula', 'criteria': 'AND($K2=FALSE,$L2=TRUE)', 'format': weekend_fmt})
+
+    def _write_daily(self, writer, fmt):
+        df = self._strip_tz(self.get_daily_summary(), ['Date'])
+        if df.empty:
+            return
+        df['Date'] = pd.to_datetime(df['Date'])
+        ws = writer.book.add_worksheet('Daily Summary')
+        writer.sheets['Daily Summary'] = ws
+        cols = [
+            {'header': 'User'},
+            {'header': 'Date', 'format': 'date'},
+            {'header': 'Day'},
+            {'header': 'Compensated Hours', 'format': 'hours', 'total': 'sum',
+             'formula': '=SUMIFS(tbl_shifts[Compensated Hours],'
+                        'tbl_shifts[User],[@User],tbl_shifts[Date],[@Date])'},
+            {'header': 'Amount', 'format': 'money', 'total': 'sum',
+             'formula': '=SUMIFS(tbl_shifts[Amount],'
+                        'tbl_shifts[User],[@User],tbl_shifts[Date],[@Date])'},
+            {'header': 'Compensation Type'},
+        ]
+        self._write_table(ws, df, table_name='tbl_daily',
+                          columns=cols, fmt=fmt, totals_label='Total')
+
+    def _write_monthly(self, writer, fmt):
+        ump = self.get_user_month_totals()
+        if ump.empty:
+            return
+        df = ump.copy()
+        df['Eligible'] = df['PrePaymentEligible'].map({True: 'Yes', False: 'No'})
+        df['Month Name'] = df['Year-Month'].apply(
+            lambda ym: datetime(int(ym[:4]), int(ym[5:7]), 1).strftime('%B %Y'))
+        df = df[['User', 'Year-Month', 'Month Name', 'Eligible',
+                 'Compensated Hours', 'Amount']]
+
+        ws = writer.book.add_worksheet('Monthly Per User')
+        writer.sheets['Monthly Per User'] = ws
+        cols = [
+            {'header': 'User'},
+            {'header': 'Year-Month'},
+            {'header': 'Month Name'},
+            {'header': 'Eligible'},
+            {'header': 'Compensated Hours', 'format': 'hours', 'total': 'sum',
+             'formula': '=SUMIFS(tbl_shifts[Compensated Hours],'
+                        'tbl_shifts[User],[@User],tbl_shifts[Year-Month],[@[Year-Month]])'},
+            {'header': 'Amount', 'format': 'money', 'total': 'sum',
+             'formula': '=SUMIFS(tbl_shifts[Amount],'
+                        'tbl_shifts[User],[@User],tbl_shifts[Year-Month],[@[Year-Month]])'},
+            {'header': 'Pre-Paid Amount', 'format': 'money', 'total': 'sum',
+             'formula': '=IF([@Eligible]="Yes",PrePay,0)'},
+            {'header': 'Final Amount', 'format': 'money', 'total': 'sum',
+             'formula': '=MAX(0,[@Amount]-[@[Pre-Paid Amount]])'},
+        ]
+        self._write_table(ws, df, table_name='tbl_monthly',
+                          columns=cols, fmt=fmt, totals_label='Total')
+
+    def _write_overview(self, wb, fmt):
+        """Reserve the Overview sheet at position 0; populated after data sheets exist."""
+        wb.add_worksheet('Overview')
+
+    def _populate_overview(self, wb, fmt):
+        ws = wb.get_worksheet_by_name('Overview')
+        ws.set_column('A:A', 38)
+        ws.set_column('B:B', 22)
+
+        period_min = self.df['Date'].min()
+        period_max = self.df['Date'].max()
+        generated = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        ws.write('A1', 'On-Call Compensation Report', fmt['h1'])
+
+        ws.write('A3', 'Period from', fmt['label'])
+        ws.write_datetime('B3', datetime.combine(period_min, time()), fmt['date'])
+        ws.write('A4', 'Period to', fmt['label'])
+        ws.write_datetime('B4', datetime.combine(period_max, time()), fmt['date'])
+        ws.write('A5', 'Generated at', fmt['label'])
+        ws.write('B5', generated)
+
+        ws.write('A7', 'Compensation base', fmt['h2'])
+        ws.write('A8', 'Monthly pre-pay (Pauschale)', fmt['label'])
+        ws.write_number('B8', MONTHLY_PREPAY_AMOUNT, fmt['money'])
+        wb.define_name('PrePay', f"='Overview'!$B$8")
+        ws.write('A9', 'Set yearly by collective agreement / law.', fmt['note'])
+        ws.write('A10', 'Standard hourly rate', fmt['label'])
+        ws.write_number('B10', STANDARD_RATE, fmt['money'])
+
+        ws.write('A12', 'Totals', fmt['h2'])
+        # Row layout: label | live formula
+        rows = [
+            ('Total compensated hours',  '=SUM(tbl_shifts[Compensated Hours])', 'hours'),
+            ('  Workday hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
+                                         'tbl_shifts[Is Holiday],FALSE,'
+                                         'tbl_shifts[Is Weekend],FALSE)', 'hours'),
+            ('  Weekend hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
+                                         'tbl_shifts[Is Holiday],FALSE,'
+                                         'tbl_shifts[Is Weekend],TRUE)', 'hours'),
+            ('  Holiday hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
+                                         'tbl_shifts[Is Holiday],TRUE)', 'hours'),
+            ('Gross compensation',       '=SUM(tbl_monthly[Amount])', 'money'),
+            ('Total pre-paid',           '=SUM(tbl_monthly[Pre-Paid Amount])', 'money'),
+            ('Additional to pay out',    '=SUM(tbl_monthly[Final Amount])', 'money'),
+        ]
+        for i, (label, formula, kind) in enumerate(rows, start=13):
+            ws.write(f'A{i}', label, fmt['label'] if not label.startswith(' ') else None)
+            ws.write_formula(f'B{i}', formula, fmt[kind])
+
+        ws.set_tab_color('#1F4E78')
+        ws.set_landscape()
+        ws.fit_to_pages(1, 1)
+        ws.set_footer('&L&A&CPage &P of &N&R&D')
 
 
 def load_shifts_from_csv(csv_path: Path) -> List[OnCallShift]:

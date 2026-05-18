@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-08
+
+### Changed
+
+- **XLSX export rewritten for HR audit**: every aggregated number in the workbook is now a live Excel formula (`=SUM`, `=SUMIFS`, `=SUBTOTAL`) over named tables (`tbl_shifts`, `tbl_monthly`, `tbl_daily`), so HR can click any total and see how it was derived. New `Overview` sheet leads with the report period, the monthly pre-pay base (`PrePay = € 510.00`, exposed as a workbook-named cell and referenced by the Monthly sheet's formulas), and a totals block driven entirely by formulas against the data tables. Sheets reordered top-down: Overview → Monthly Per User → Daily Summary → Detailed Shifts.
+- **Excel polish**: native Excel Tables (banded rows + autofilter), frozen header rows, page setup for printing (landscape, fit-to-width, repeat header row, footer with page number), conditional row highlighting on Detailed Shifts (light yellow for holidays, light gray for weekends), proper number formats (`€ #,##0.00`, `0.00`, `yyyy-mm-dd`, `yyyy-mm-dd hh:mm`), and native Excel datetimes (no more stringified dates).
+- **`MONTHLY_PREPAY_AMOUNT` constant**: the monthly pre-pay (set yearly by collective agreement) is now a single module-level constant in `main.py`, replacing two hardcoded `510.0` literals. Update at year boundary.
+
+### Fixed
+
+- **Total Pre-Paid on the Summary sheet ignored eligibility**: the previous code multiplied `510 × len(unique_user_months)`, counting months where `PrePaymentEligible=False`. Now the Overview's "Total pre-paid" is `=SUM(tbl_monthly[Pre-Paid Amount])`, which by construction respects the per-row eligibility flag.
+
 ## 2026-05-05
 
 ### Added
