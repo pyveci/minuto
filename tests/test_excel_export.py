@@ -11,6 +11,9 @@ from openpyxl import load_workbook
 
 from minuto.main import (
     MONTHLY_PREPAY_AMOUNT,
+    NIGHT_SHORT_SHIFT_RATE,
+    STANDARD_RATE,
+    WEEKEND_SHORT_SHIFT_RATE,
     CompensationPeriod,
     CompensationReport,
     CompensationType,
@@ -67,10 +70,18 @@ class TestExcelExport(unittest.TestCase):
         self.assertEqual(ws['A8'].value, 'Monthly pre-pay (Pauschale)')
         self.assertEqual(ws['B8'].value, MONTHLY_PREPAY_AMOUNT)
 
+    def test_overview_lists_all_rates(self):
+        # Every yearly rate should be written into the report so a reviewer can
+        # audit which figures produced the numbers.
+        ws = self.wb['Overview']
+        self.assertEqual(ws['B9'].value, STANDARD_RATE)
+        self.assertEqual(ws['B10'].value, WEEKEND_SHORT_SHIFT_RATE)
+        self.assertEqual(ws['B11'].value, NIGHT_SHORT_SHIFT_RATE)
+
     def test_overview_uses_live_formulas(self):
         ws = self.wb['Overview']
-        # Cells in the totals block (A13:B19) are formulas referencing tables.
-        formula_values = [ws.cell(row=r, column=2).value for r in range(13, 20)]
+        # Cells in the totals block (A15:B21) are formulas referencing tables.
+        formula_values = [ws.cell(row=r, column=2).value for r in range(15, 22)]
         for v in formula_values:
             self.assertIsInstance(v, str)
             self.assertTrue(v.startswith('='), f"expected formula, got {v!r}")
@@ -102,6 +113,44 @@ class TestExcelExport(unittest.TestCase):
         ]
         self.assertEqual(eligible_rows.count('Yes'), 2)
         self.assertEqual(eligible_rows.count('No'), 0)
+
+
+class TestExcelExportMixedTimezones(unittest.TestCase):
+    """Regression: users spanning different timezones produce an object-dtype
+    Start/End column that pandas can't hold as a single tz dtype. The export
+    must still strip tz per element (Excel rejects tz-aware datetimes) and keep
+    each user's local wall-clock time.
+    """
+
+    def test_export_succeeds_and_keeps_local_wall_clock(self):
+        base = datetime(2026, 4, 6, 18, 0)
+        periods = [
+            CompensationPeriod(
+                user="walter@crate.io",
+                start=pytz.timezone("Europe/Vienna").localize(base),
+                end=pytz.timezone("Europe/Vienna").localize(base + timedelta(hours=4)),
+                hours=4.0, compensated_hours=4.0, amount=22.84,
+                compensation_type=CompensationType.STANDARD,
+            ),
+            CompensationPeriod(
+                user="shyukri.shyukriev@crate.io",
+                start=pytz.timezone("Europe/Sofia").localize(base),
+                end=pytz.timezone("Europe/Sofia").localize(base + timedelta(hours=4)),
+                hours=4.0, compensated_hours=4.0, amount=22.84,
+                compensation_type=CompensationType.STANDARD,
+            ),
+        ]
+        with TemporaryDirectory() as tmp:
+            out = Path(tmp) / 'mixed.xlsx'
+            CompensationReport(periods).export_to_excel(out)  # must not raise
+            wb = load_workbook(out)
+            ws = wb['Detailed Shifts']
+            starts = {ws.cell(r, 1).value: ws.cell(r, 3).value for r in (2, 3)}
+            wb.close()
+        # Local wall-clock time preserved and tz dropped (naive datetime).
+        for value in starts.values():
+            self.assertEqual(value, base)
+            self.assertIsNone(value.tzinfo)
 
 
 if __name__ == '__main__':

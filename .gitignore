@@ -9,3 +9,11 @@ __pycache__/
 .venv/
 .pytest_cache/
 uv.lock
+
+# Local payroll data & generated reports (contain personal data / output)
+shifts.csv
+profiles.json
+user_profiles.json
+*.xlsx
+*.png
+calendars/
