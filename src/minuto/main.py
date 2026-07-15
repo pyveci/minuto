@@ -35,9 +35,9 @@ from minuto.models import OnCallShift
 load_dotenv()
 
 # Constants for compensation calculation
-STANDARD_RATE = 5.56  # Euro per hour outside working hours
+STANDARD_RATE = 5.71  # Euro per hour outside working hours
 WEEKEND_SHORT_SHIFT_THRESHOLD = 5  # hours
-WEEKEND_SHORT_SHIFT_RATE = 27.80  # Euro fixed rate
+WEEKEND_SHORT_SHIFT_RATE = 28.55  # Euro fixed rate
 NIGHT_SHORT_SHIFT_THRESHOLD = 2  # hours
 NIGHT_SHORT_SHIFT_RATE = 11.12  # Euro fixed rate
 NIGHT_START_HOUR = 22  # 10 PM
@@ -45,7 +45,7 @@ NIGHT_END_HOUR = 6    # 6 AM
 
 # Monthly pre-pay (Pauschale) — set yearly by collective agreement / law.
 # Update at year boundary. Referenced by name `PrePay` in the Excel export.
-MONTHLY_PREPAY_AMOUNT = 510.0
+MONTHLY_PREPAY_AMOUNT = 536.0
 
 # Excel export number formats
 XLSX_MONEY_FORMAT = '€ #,##0.00'
@@ -1116,13 +1116,27 @@ class CompensationReport:
 
     @staticmethod
     def _strip_tz(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-        """Return df with tz stripped from given datetime columns (Excel needs naive)."""
+        """Return df with tz stripped from given datetime columns (Excel needs naive).
+
+        Keeps the local wall-clock time and drops tzinfo. Handles both a uniform
+        datetime64[ns, tz] column and an object column of tz-aware datetimes with
+        *mixed* timezones — the latter is what we get when users span different
+        zones (Vienna, Sofia, …), which pandas can't hold as a single tz dtype.
+        """
         df = df.copy()
         for c in cols:
-            if c not in df.columns or not pd.api.types.is_datetime64_any_dtype(df[c]):
+            if c not in df.columns:
                 continue
-            if df[c].dt.tz is not None:
-                df[c] = df[c].dt.tz_localize(None)
+            col = df[c]
+            if pd.api.types.is_datetime64_any_dtype(col):
+                if col.dt.tz is not None:
+                    df[c] = col.dt.tz_localize(None)
+            else:
+                # object dtype (e.g. mixed timezones): strip tz per element
+                df[c] = col.map(
+                    lambda v: v.replace(tzinfo=None)
+                    if isinstance(v, datetime) and v.tzinfo is not None else v
+                )
         return df
 
     def _detailed_df(self) -> pd.DataFrame:
@@ -1318,11 +1332,15 @@ class CompensationReport:
         ws.write('A8', 'Monthly pre-pay (Pauschale)', fmt['label'])
         ws.write_number('B8', MONTHLY_PREPAY_AMOUNT, fmt['money'])
         wb.define_name('PrePay', f"='Overview'!$B$8")
-        ws.write('A9', 'Set yearly by collective agreement / law.', fmt['note'])
-        ws.write('A10', 'Standard hourly rate', fmt['label'])
-        ws.write_number('B10', STANDARD_RATE, fmt['money'])
+        ws.write('A9', 'Standard hourly rate (outside working hours)', fmt['label'])
+        ws.write_number('B9', STANDARD_RATE, fmt['money'])
+        ws.write('A10', f'Weekend short-shift flat rate (< {WEEKEND_SHORT_SHIFT_THRESHOLD} h)', fmt['label'])
+        ws.write_number('B10', WEEKEND_SHORT_SHIFT_RATE, fmt['money'])
+        ws.write('A11', f'Night short-shift flat rate (< {NIGHT_SHORT_SHIFT_THRESHOLD} h)', fmt['label'])
+        ws.write_number('B11', NIGHT_SHORT_SHIFT_RATE, fmt['money'])
+        ws.write('A12', 'Set yearly by collective agreement / law.', fmt['note'])
 
-        ws.write('A12', 'Totals', fmt['h2'])
+        ws.write('A14', 'Totals', fmt['h2'])
         # Row layout: label | live formula
         rows = [
             ('Total compensated hours',  '=SUM(tbl_shifts[Compensated Hours])', 'hours'),
@@ -1338,7 +1356,7 @@ class CompensationReport:
             ('Total pre-paid',           '=SUM(tbl_monthly[Pre-Paid Amount])', 'money'),
             ('Additional to pay out',    '=SUM(tbl_monthly[Final Amount])', 'money'),
         ]
-        for i, (label, formula, kind) in enumerate(rows, start=13):
+        for i, (label, formula, kind) in enumerate(rows, start=15):
             ws.write(f'A{i}', label, fmt['label'] if not label.startswith(' ') else None)
             ws.write_formula(f'B{i}', formula, fmt[kind])
 
@@ -1523,7 +1541,53 @@ def create_default_user_profiles(users: List[str], output_path: Path, all_shifts
         print("and then update the user profiles with the calendar file path.")
 
 
-def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel):
+def _print_rate_table():
+    """Print the compensation rates in a compact, HR-readable block."""
+    click.echo("")
+    click.echo("=" * 60)
+    click.echo("Compensation rates used for this calculation")
+    click.echo("(set yearly by collective agreement / law)")
+    click.echo("=" * 60)
+    click.echo(f"  Standard rate (outside working hours) : € {STANDARD_RATE:>7.2f} / hour")
+    click.echo(f"  Weekend short shift (< {WEEKEND_SHORT_SHIFT_THRESHOLD} h, flat rate)  : € {WEEKEND_SHORT_SHIFT_RATE:>7.2f}")
+    click.echo(f"  Night short shift (< {NIGHT_SHORT_SHIFT_THRESHOLD} h, flat rate)    : € {NIGHT_SHORT_SHIFT_RATE:>7.2f}")
+    click.echo(f"  Monthly pre-pay (Pauschale)           : € {MONTHLY_PREPAY_AMOUNT:>7.2f}")
+    click.echo("=" * 60)
+
+
+def resolve_rates(assume_yes=False):
+    """Confirm (and optionally adjust) the yearly compensation rates.
+
+    The rates are hardcoded defaults but change every year, so we surface them
+    before calculating and print them into the output — that way whoever reviews
+    the numbers (payroll/HR) sees exactly which figures produced them. When
+    running interactively the user can correct any value; --yes or a non-TTY
+    stdin accepts the defaults unattended.
+    """
+    global STANDARD_RATE, WEEKEND_SHORT_SHIFT_RATE, NIGHT_SHORT_SHIFT_RATE, MONTHLY_PREPAY_AMOUNT
+
+    _print_rate_table()
+
+    if assume_yes or not sys.stdin.isatty():
+        return
+
+    if click.confirm("\nAre these rates correct for this pay period?", default=True):
+        return
+
+    STANDARD_RATE = click.prompt("  Standard rate (€ / hour)",
+                                 default=STANDARD_RATE, type=float)
+    WEEKEND_SHORT_SHIFT_RATE = click.prompt("  Weekend short-shift flat rate (€)",
+                                            default=WEEKEND_SHORT_SHIFT_RATE, type=float)
+    NIGHT_SHORT_SHIFT_RATE = click.prompt("  Night short-shift flat rate (€)",
+                                          default=NIGHT_SHORT_SHIFT_RATE, type=float)
+    MONTHLY_PREPAY_AMOUNT = click.prompt("  Monthly pre-pay / Pauschale (€)",
+                                         default=MONTHLY_PREPAY_AMOUNT, type=float)
+    click.echo("\nUpdated rates:")
+    _print_rate_table()
+
+
+def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel,
+                   assume_yes=False):
     """Process shifts and generate compensation report."""
     # Create default user profiles if requested
     if create_profiles:
@@ -1532,6 +1596,9 @@ def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_e
         create_default_user_profiles(users, output_path, shifts)
         if not user_profiles:  # if we just created default profiles, exit
             return
+
+    # Confirm/adjust the yearly rates and record them in the output.
+    resolve_rates(assume_yes)
 
     # Initialize the calculator
     # Validate user profiles file if specified
@@ -1758,7 +1825,10 @@ def _parse_window(start_date_str: str, end_date_str: str):
 @click.option('--export-excel', type=click.Path(path_type=Path),
               help='Export the report to an Excel file',
               envvar='OPSGENIE_EXPORT_EXCEL')
-def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, export_excel):
+@click.option('--yes', '-y', 'assume_yes', is_flag=True,
+              help='Accept the compensation rates without the interactive prompt.')
+def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, export_excel,
+                       assume_yes):
     """Calculate compensation from a CSV file with on-call shifts data."""
     try:
         shifts = load_shifts_from_csv(csv_file)
@@ -1767,7 +1837,8 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
         click.echo(f"Error loading CSV file: {str(e)}", err=True)
         sys.exit(1)
 
-    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
+    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel,
+                   assume_yes=assume_yes)
 
 
 @cli.command('opsgenie')
@@ -1797,8 +1868,11 @@ def calculate_from_csv(csv_file, user_profiles, create_profiles, output_plot, ex
 @click.option('--export-excel', type=click.Path(path_type=Path),
               help='Export the report to an Excel file',
               envvar='OPSGENIE_EXPORT_EXCEL')
+@click.option('--yes', '-y', 'assume_yes', is_flag=True,
+              help='Accept the compensation rates without the interactive prompt.')
 def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_csv,
-                            user_profiles, create_profiles, output_plot, export_excel):
+                            user_profiles, create_profiles, output_plot, export_excel,
+                            assume_yes):
     """Fetch on-call data from OpsGenie API and calculate compensation."""
     start_date_obj, end_date_obj = _parse_window(start_date, end_date)
 
@@ -1820,7 +1894,8 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
         sys.exit(1)
 
     # Process shifts (calculate compensation, generate reports, etc.)
-    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
+    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel,
+                   assume_yes=assume_yes)
 
 
 @cli.command('jsm')
@@ -1863,10 +1938,12 @@ def calculate_from_opsgenie(api_token, schedule_id, start_date, end_date, save_c
               help='Skip active and forecast periods (only count served shifts). '
                    'Recommended for mid-period payroll runs.',
               envvar='JSM_HISTORICAL_ONLY')
+@click.option('--yes', '-y', 'assume_yes', is_flag=True,
+              help='Accept the compensation rates without the interactive prompt.')
 def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
                        start_date, end_date, save_csv, user_profiles,
                        create_profiles, output_plot, export_excel,
-                       historical_only):
+                       historical_only, assume_yes):
     """Fetch on-call data from JSM Operations API and calculate compensation."""
     start_date_obj, end_date_obj = _parse_window(start_date, end_date)
 
@@ -1899,7 +1976,8 @@ def calculate_from_jsm(cloud_id, site_host, email, api_token, schedule_id,
         click.echo(f"Error fetching data from JSM Ops API: {str(e)}", err=True)
         sys.exit(1)
 
-    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel)
+    process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel,
+                   assume_yes=assume_yes)
 
 
 @cli.command('profiles')

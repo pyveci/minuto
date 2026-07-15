@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-14
+
+### Added
+
+- **Rate confirmation at runtime**: the yearly compensation rates (standard hourly, weekend/night short-shift flat rates, monthly pre-pay) are printed at the start of every calculation and — when running interactively — can be confirmed or corrected on the spot, so a stale hardcoded value can't silently skew a payroll run. The rate block is written into both the console report and the XLSX `Overview` sheet so payroll/HR can see exactly which figures produced the numbers. Pass `--yes`/`-y` (or run with non-TTY stdin) to accept the defaults unattended.
+- **All flat rates in the XLSX `Overview`**: the weekend and night short-shift flat rates now appear alongside the pre-pay and standard hourly rate in the Compensation base block (previously only pre-pay and the standard rate were shown).
+
+### Fixed
+
+- **XLSX export crashed for users in different timezones**: when the roster spanned more than one timezone (e.g. Vienna + Sofia), the `Start`/`End` DataFrame column fell back to `object` dtype, so `_strip_tz` (which only handled `datetime64`) left the datetimes tz-aware and xlsxwriter raised `TypeError: Excel doesn't support timezones in datetimes`. `_strip_tz` now also strips tz element-wise on object columns, keeping each shift's local wall-clock time. Regression test added.
+
+### Packaging
+
+- **`minuto` console entry point**: added `[project.scripts]` so the tool runs as `uv run minuto <command>` instead of by file path. Added `src/minuto/__init__.py` and an explicit setuptools src-layout build config. README updated accordingly.
+
 ## 2026-05-08
 
 ### Changed

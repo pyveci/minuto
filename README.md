@@ -4,15 +4,16 @@ This tool calculates compensation for on-call shifts based on data from OpsGenie
 
 ## Features
 
-- Calculate on-call compensation with standard rates (5.56 € per hour outside working hours)
+- Calculate on-call compensation with standard rates (5.71 € per hour outside working hours)
 - Apply special rates for weekend short shifts (< 5 hours: 27.80 €) and night shifts (< 2 hours: 11.12 €)
+- Confirm (and optionally adjust) the yearly rates at the start of each run, and print them into the report so payroll/HR can see exactly which figures produced the numbers. Pass `--yes`/`-y` (or run non-interactively) to accept the defaults unattended.
 - Consider individual working hours, time zones, and holidays
 - Handle daylight saving time transitions
 - Generate detailed reports and compensation summaries
 - Create visualizations of daily compensation amounts
 - 24.12. + 31.12 are considered 1/2 a workday, unless the downloaded Calendar data suggest a holiday.
 - Creates an XSLX File if requested `--export-excel`
-- Has a separate module for check for 24x7 compliance: `uv run ./check_oncall_rules.py shifts.csv`
+- Has a separate module for check for 24x7 compliance: `uv run python src/minuto/check_oncall_rules.py shifts.csv`
 - Custom Holidays per user (in user_profiles.json) are supported:
 ```json
     "country_code": "AT",
@@ -77,7 +78,7 @@ The tool provides these main commands:
 Retrieve on-call shift data directly from the OpsGenie API:
 
 ```bash
-uv run main.py opsgenie --api-token YOUR_TOKEN --schedule-id YOUR_SCHEDULE_ID \
+uv run minuto opsgenie --api-token YOUR_TOKEN --schedule-id YOUR_SCHEDULE_ID \
     --start-date 2025-01-01 --end-date 2025-05-09 \
     --save-csv shifts.csv --user-profiles user_profiles.json
 ```
@@ -86,7 +87,7 @@ Or using environment variables:
 
 ```bash
 # After setting up your .env file
-uv run main.py opsgenie
+uv run minuto opsgenie
 ```
 
 ### 1b. Fetch Data from Jira Service Management (JSM Ops)
@@ -94,7 +95,7 @@ uv run main.py opsgenie
 Atlassian migrated OpsGenie to JSM Operations. The `jsm` subcommand reads the same on-call data from the new backend. Schedule UUIDs carry over 1:1, so an existing `OPSGENIE_SCHEDULE_ID` works as the JSM schedule ID without any change.
 
 ```bash
-uv run main.py jsm \
+uv run minuto jsm \
     --cloud-id YOUR_CLOUD_ID --site-host your-org.atlassian.net \
     --email you@example.com --api-token ATATT... \
     --schedule-id YOUR_SCHEDULE_ID \
@@ -120,7 +121,7 @@ JSM_HISTORICAL_ONLY=1            # equivalent to --historical-only
 ```
 
 ```bash
-uv run main.py jsm --start-date 2025-11-01 --end-date 2026-04-30
+uv run minuto jsm --start-date 2025-11-01 --end-date 2026-04-30
 ```
 
 Notes:
@@ -132,7 +133,7 @@ Notes:
 If you already have on-call data in a CSV file:
 
 ```bash
-uv run main.py csv shifts.csv --user-profiles user_profiles.json --output-plot compensation_chart.png
+uv run minuto csv shifts.csv --user-profiles user_profiles.json --output-plot compensation_chart.png
 ```
 
 ### 3. Create User Profiles
@@ -140,7 +141,7 @@ uv run main.py csv shifts.csv --user-profiles user_profiles.json --output-plot c
 Generate default user profiles from existing on-call data:
 
 ```bash
-uv run main.py profiles shifts.csv --output user_profiles.json
+uv run minuto profiles shifts.csv --output user_profiles.json
 ```
 
 ### 4. Download Holiday Calendars
@@ -148,13 +149,13 @@ uv run main.py profiles shifts.csv --output user_profiles.json
 Download holiday calendars for specific countries:
 
 ```bash
-uv run main.py calendars --country AT --country FR --country ES --country BG
+uv run minuto calendars --country AT --country FR --country ES --country BG
 ```
 
 You can also download all supported calendars at once:
 
 ```bash
-uv run main.py calendars --all
+uv run minuto calendars --all
 ```
 
 ## Workflow Examples
@@ -164,7 +165,7 @@ uv run main.py calendars --all
 1. Fetch data from OpsGenie and save to CSV:
 
 ```bash
-uv run main.py opsgenie \
+uv run minuto opsgenie \
     --api-token YOUR_TOKEN \
     --schedule-id YOUR_SCHEDULE_ID \
     --start-date 2025-01-01 \
@@ -175,7 +176,7 @@ uv run main.py opsgenie \
 2. Generate user profiles:
 
 ```bash
-uv run main.py profiles shifts.csv --output user_profiles.json
+uv run minuto profiles shifts.csv --output user_profiles.json
 ```
 
 3. Edit the user profiles to adjust timezones, working hours, etc.
@@ -183,7 +184,7 @@ uv run main.py profiles shifts.csv --output user_profiles.json
 4. Calculate compensation with the updated profiles:
 
 ```bash
-uv run main.py csv shifts.csv --user-profiles user_profiles.json --output-plot chart.png
+uv run minuto csv shifts.csv --user-profiles user_profiles.json --output-plot chart.png
 ```
 
 ### Using Environment Variables
@@ -201,20 +202,20 @@ OPSGENIE_SAVE_CSV=shifts.csv
 2. Fetch data and save to CSV:
 
 ```bash
-uv run main.py opsgenie
+uv run minuto opsgenie
 ```
 
 3. Create and adjust user profiles:
 
 ```bash
-uv run main.py profiles shifts.csv
+uv run minuto profiles shifts.csv
 # Edit user_profiles.json to adjust settings
 ```
 
 4. Run the compensation calculation:
 
 ```bash
-uv run main.py csv shifts.csv
+uv run minuto csv shifts.csv
 ```
 
 ## Report Format
