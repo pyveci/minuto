@@ -797,7 +797,7 @@ class CompensationReport:
                 f"{start_time_str:<6} "
                 f"{end_date_str:<10} "
                 f"{end_time_str:<6} "
-                f"{row['Compensated Hours']:<8.1f} "
+                f"{row['Compensated Hours']:<8.2f} "
                 f"{row['Amount']:<12.2f} "
                 f"{compensation_type}"
             )
@@ -843,7 +843,7 @@ class CompensationReport:
                 final_amount = user_total_final
 
                 # Print user subtotal with fixed monthly pre-paid
-                print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.1f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
+                print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.2f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
                 if final_amount > 0:
                     print(f"{'':<30} {'ADDITIONAL COMPENSATION':<25} {final_amount:<15.2f}")
                 print(f"{'':<30} {'':-<10} {'':-<12} {'':-<15} {'':-<15} {'':-<15}")
@@ -885,7 +885,7 @@ class CompensationReport:
             print(
                 f"{row['User']:<30} "
                 f"{month_name:<10} "
-                f"{row['Compensated Hours']:<12.1f} "
+                f"{row['Compensated Hours']:<12.2f} "
                 f"{row['Amount']:<15.2f} "
                 f"{month_prepaid:<15.2f} "
                 f"{month_adjusted:<15.2f} "
@@ -902,7 +902,7 @@ class CompensationReport:
             final_amount = user_total_final
 
             # Print user subtotal with fixed monthly pre-paid
-            print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.1f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
+            print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.2f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
             if final_amount > 0:
                 print(f"{'':<30} {'ADDITIONAL COMPENSATION':<25} {final_amount:<15.2f}")
 
@@ -920,7 +920,7 @@ class CompensationReport:
 
         # Print grand totals with pre-paid information
         print("\n=== GRAND TOTAL (WITH FIXED MONTHLY PRE-PAID COMPENSATION) ===")
-        print(f"Total compensated hours: {total_compensated_hours:.1f} hours")
+        print(f"Total compensated hours: {total_compensated_hours:.2f} hours")
         print(f"Total raw compensation amount: {total_raw_amount:.2f} €")
         print(f"Total fixed pre-paid compensation ({total_unique_user_months} user-months @ {MONTHLY_PREPAY_AMOUNT:.0f} €): {total_fixed_prepaid:.2f} €")
         print(f"Total additional compensation: {total_additional_compensation:.2f} €")
@@ -929,10 +929,10 @@ class CompensationReport:
         hours_breakdown = self.get_hours_breakdown()
 
         print("\n=== HOURS BREAKDOWN (VALIDATION) ===")
-        print(f"Workday hours (outside working hours): {hours_breakdown['workday_hours']:.1f} hours")
-        print(f"Weekend hours: {hours_breakdown['weekend_hours']:.1f} hours")
-        print(f"Holiday hours (based on AT calendar): {hours_breakdown['holiday_hours']:.1f} hours")
-        print(f"TOTAL COMPENSATED HOURS: {hours_breakdown['total_hours']:.1f} hours")
+        print(f"Workday hours (outside working hours): {hours_breakdown['workday_hours']:.2f} hours")
+        print(f"Weekend hours: {hours_breakdown['weekend_hours']:.2f} hours")
+        print(f"Holiday hours (based on AT calendar): {hours_breakdown['holiday_hours']:.2f} hours")
+        print(f"TOTAL COMPENSATED HOURS: {hours_breakdown['total_hours']:.2f} hours")
 
         # Validate that total hours match the sum of individual categories
         calculated_total = hours_breakdown['workday_hours'] + hours_breakdown['weekend_hours'] + hours_breakdown['holiday_hours']
