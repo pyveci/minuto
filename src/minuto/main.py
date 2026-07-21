@@ -27,6 +27,7 @@ import requests
 from dateutil import parser
 from dotenv import load_dotenv
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from xlsxwriter.utility import xl_col_to_name
 
 from minuto.jsm import UnresolvedAccountError, fetch_shifts_from_jsm
 from minuto.models import OnCallShift
@@ -820,6 +821,13 @@ class CompensationReport:
         user_total_raw_amount = 0
         user_total_prepaid = 0
         user_months_eligible = 0
+        # Additional compensation is netted per month (per-month floor): a month
+        # below the pre-pay contributes 0 and never offsets a busier month. So the
+        # subtotal/grand-total accumulate the per-month clamped finals rather than
+        # netting the aggregate — otherwise they disagree with the per-month rows
+        # (and with the XLSX export).
+        user_total_final = 0
+        grand_total_final = 0
 
         # Variables to track unique months per user
         user_unique_months = {}
@@ -827,12 +835,12 @@ class CompensationReport:
         for _, row in user_month_totals.iterrows():
             # If we're processing a new user, print a separator for readability
             if current_user is not None and current_user != row['User']:
-                # Calculate the fixed monthly pre-paid amount (€510 per unique month)
+                # Fixed monthly pre-paid amount (MONTHLY_PREPAY_AMOUNT per unique month)
                 unique_months_count = len(user_unique_months.get(current_user, []))
-                fixed_monthly_prepaid = 510.0 * unique_months_count
+                fixed_monthly_prepaid = MONTHLY_PREPAY_AMOUNT * unique_months_count
 
-                # Calculate final amount after deducting the fixed monthly pre-paid
-                final_amount = max(0, user_total_raw_amount - fixed_monthly_prepaid)
+                # Sum of the per-month clamped finals (per-month floor rule)
+                final_amount = user_total_final
 
                 # Print user subtotal with fixed monthly pre-paid
                 print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.1f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
@@ -843,6 +851,7 @@ class CompensationReport:
                 # Reset variables for the next user
                 user_total_hours = 0
                 user_total_raw_amount = 0
+                user_total_final = 0
 
             # Keep track of unique months for this user
             if current_user != row['User']:
@@ -858,13 +867,15 @@ class CompensationReport:
             is_eligible = row['PrePaymentEligible']
 
             # Calculate pre-paid amount based on eligibility
-            month_prepaid = 510.0 if is_eligible else 0.0
+            month_prepaid = MONTHLY_PREPAY_AMOUNT if is_eligible else 0.0
             user_total_prepaid += month_prepaid
             if is_eligible:
                 user_months_eligible += 1
 
-            # Calculate the adjusted amount for this month (for display purposes only)
+            # Per-month clamped final; accumulate for the subtotal and grand total.
             month_adjusted = max(0, row['Amount'] - month_prepaid)
+            user_total_final += month_adjusted
+            grand_total_final += month_adjusted
 
             # Format the month name
             year, month = map(int, row['Year-Month'].split('-'))
@@ -883,12 +894,12 @@ class CompensationReport:
 
         # Print final user subtotal if we had any data
         if current_user is not None:
-            # Calculate the fixed monthly pre-paid amount (€510 per unique month)
+            # Fixed monthly pre-paid amount (MONTHLY_PREPAY_AMOUNT per unique month)
             unique_months_count = len(user_unique_months.get(current_user, []))
-            fixed_monthly_prepaid = 510.0 * unique_months_count
+            fixed_monthly_prepaid = MONTHLY_PREPAY_AMOUNT * unique_months_count
 
-            # Calculate final amount after deducting the fixed monthly pre-paid
-            final_amount = max(0, user_total_raw_amount - fixed_monthly_prepaid)
+            # Sum of the per-month clamped finals (per-month floor rule)
+            final_amount = user_total_final
 
             # Print user subtotal with fixed monthly pre-paid
             print(f"{'':<30} {'SUBTOTAL':<10} {user_total_hours:<12.1f} {user_total_raw_amount:<15.2f} {fixed_monthly_prepaid:<15.2f} {final_amount:<15.2f}")
@@ -901,16 +912,17 @@ class CompensationReport:
 
         # Calculate total fixed pre-paid amount based on unique user-months
         total_unique_user_months = sum(len(months) for months in user_unique_months.values())
-        total_fixed_prepaid = 510.0 * total_unique_user_months
+        total_fixed_prepaid = MONTHLY_PREPAY_AMOUNT * total_unique_user_months
 
-        # Calculate total additional compensation
-        total_additional_compensation = max(0, total_raw_amount - total_fixed_prepaid)
+        # Total additional compensation = sum of the per-month clamped finals
+        # (per-month floor rule; matches the per-user subtotals and the XLSX).
+        total_additional_compensation = grand_total_final
 
         # Print grand totals with pre-paid information
         print("\n=== GRAND TOTAL (WITH FIXED MONTHLY PRE-PAID COMPENSATION) ===")
         print(f"Total compensated hours: {total_compensated_hours:.1f} hours")
         print(f"Total raw compensation amount: {total_raw_amount:.2f} €")
-        print(f"Total fixed pre-paid compensation ({total_unique_user_months} user-months @ 510 €): {total_fixed_prepaid:.2f} €")
+        print(f"Total fixed pre-paid compensation ({total_unique_user_months} user-months @ {MONTHLY_PREPAY_AMOUNT:.0f} €): {total_fixed_prepaid:.2f} €")
         print(f"Total additional compensation: {total_additional_compensation:.2f} €")
 
         # Hours breakdown for validation
@@ -1114,6 +1126,23 @@ class CompensationReport:
 
     # ---------- Excel export helpers ----------
 
+    # Sheet names and 0-indexed column positions of the source tables, so the
+    # cross-sheet formulas below use plain sheet-qualified ranges instead of
+    # structured table references ([@Col] / tbl[Col]), which Excel and
+    # LibreOffice resolve unreliably in calculated columns (they surfaced as
+    # #REF!/#N/A on recalculation).
+    DETAILED_SHEET = 'Detailed Shifts'
+    MONTHLY_SHEET = 'Monthly Per User'
+    DET = {'User': 0, 'Date': 1, 'Year-Month': 5, 'Compensated Hours': 7,
+           'Amount': 8, 'Is Holiday': 10, 'Is Weekend': 11}
+    MON = {'Amount': 5, 'Pre-Paid Amount': 6, 'Final Amount': 7}
+
+    @staticmethod
+    def _abs_col(sheet: str, col_idx: int, n_rows: int) -> str:
+        """Sheet-qualified absolute range for a data column (rows 2..n_rows+1)."""
+        col = xl_col_to_name(col_idx)
+        return f"'{sheet}'!${col}$2:${col}${n_rows + 1}"
+
     @staticmethod
     def _strip_tz(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
         """Return df with tz stripped from given datetime columns (Excel needs naive).
@@ -1167,31 +1196,40 @@ class CompensationReport:
         n = len(df)
         n_cols = len(columns)
         has_totals = totals_label is not None or any(c.get('total') for c in columns)
-        last_row = n + (1 if has_totals else 0)
 
-        cols_spec = []
-        for c in columns:
-            spec = {'header': c['header']}
-            if c.get('total'):
-                spec['total_function'] = c['total']
-            cols_spec.append(spec)
-        if totals_label and cols_spec:
-            cols_spec[0]['total_string'] = totals_label
-
-        ws.add_table(0, 0, last_row, n_cols - 1, {
+        # The table covers the header + data rows ONLY. The totals row is written
+        # just below the table (see further down) rather than as a native table
+        # totals row: a table totals-row cell containing a formula must be declared
+        # as totalsRowFunction="custom" in the table definition, and writing a raw
+        # formula there without that declaration makes Excel flag the file as
+        # corrupt ("repaired"). A plain row below the table has no such constraint,
+        # and lets us attach precomputed cached values.
+        cols_spec = [{'header': c['header']} for c in columns]
+        ws.add_table(0, 0, n, n_cols - 1, {
             'name': table_name,
             'columns': cols_spec,
             'style': 'Table Style Medium 2',
             'banded_rows': True,
             'autofilter': True,
-            'total_row': has_totals,
+            'total_row': False,
         })
 
         for r, (_, row) in enumerate(df.iterrows(), start=1):
             for c_idx, c in enumerate(columns):
                 cell_fmt = fmt.get(c['format']) if 'format' in c else None
                 if 'formula' in c:
-                    ws.write_formula(r, c_idx, c['formula'].format(r=r + 1), cell_fmt)
+                    formula = c['formula'].format(r=r + 1)
+                    # Write the precomputed result as the cached formula value so the
+                    # number is correct in viewers that don't recalculate (Slack/Numbers/
+                    # Google Sheets/LibreOffice in manual mode). Excel still recalcs the
+                    # live formula on open (fullCalcOnLoad), yielding the same value.
+                    val_key = c.get('value')
+                    if val_key is not None and val_key in df.columns:
+                        cached = row[val_key]
+                        cached = 0 if pd.isna(cached) else cached
+                        ws.write_formula(r, c_idx, formula, cell_fmt, cached)
+                    else:
+                        ws.write_formula(r, c_idx, formula, cell_fmt)
                     continue
                 key = c.get('df_col', c['header'])
                 value = row[key] if key in df.columns else None
@@ -1199,6 +1237,28 @@ class CompensationReport:
                     ws.write_blank(r, c_idx, None, cell_fmt)
                 else:
                     ws.write(r, c_idx, value, cell_fmt)
+
+        # Totals row, written just below the table. SUBTOTAL(109,…) over the data
+        # rows, with a precomputed cached value so it's correct without recalc.
+        if has_totals:
+            total_row_idx = n + 1  # 0-indexed row immediately below the last data row
+            if totals_label:
+                ws.write(total_row_idx, 0, totals_label, fmt.get('label'))
+            for c_idx, c in enumerate(columns):
+                if c.get('total') != 'sum':
+                    continue
+                cell_fmt = fmt.get(c['format']) if 'format' in c else None
+                val_key = c.get('value', c.get('df_col', c['header']))
+                if val_key in df.columns:
+                    total_val = float(
+                        pd.to_numeric(df[val_key], errors='coerce').fillna(0).sum())
+                else:
+                    total_val = 0
+                col = xl_col_to_name(c_idx)
+                ws.write_formula(
+                    total_row_idx, c_idx,
+                    f'=SUBTOTAL(109,{col}2:{col}{n + 1})',
+                    cell_fmt, total_val)
 
         for c_idx, c in enumerate(columns):
             key = c.get('df_col', c['header'])
@@ -1259,16 +1319,23 @@ class CompensationReport:
         df['Date'] = pd.to_datetime(df['Date'])
         ws = writer.book.add_worksheet('Daily Summary')
         writer.sheets['Daily Summary'] = ws
+        # Cross-sheet SUMIFS against the Detailed Shifts data, matching this row's
+        # User (col A) and Date (col B). Explicit ranges — see _abs_col.
+        n_det = len(self._detailed_df())
+        hrs = self._abs_col(self.DETAILED_SHEET, self.DET['Compensated Hours'], n_det)
+        amt = self._abs_col(self.DETAILED_SHEET, self.DET['Amount'], n_det)
+        usr = self._abs_col(self.DETAILED_SHEET, self.DET['User'], n_det)
+        dat = self._abs_col(self.DETAILED_SHEET, self.DET['Date'], n_det)
         cols = [
             {'header': 'User'},
             {'header': 'Date', 'format': 'date'},
             {'header': 'Day'},
             {'header': 'Compensated Hours', 'format': 'hours', 'total': 'sum',
-             'formula': '=SUMIFS(tbl_shifts[Compensated Hours],'
-                        'tbl_shifts[User],[@User],tbl_shifts[Date],[@Date])'},
+             'value': 'Compensated Hours',
+             'formula': f'=SUMIFS({hrs},{usr},$A{{r}},{dat},$B{{r}})'},
             {'header': 'Amount', 'format': 'money', 'total': 'sum',
-             'formula': '=SUMIFS(tbl_shifts[Amount],'
-                        'tbl_shifts[User],[@User],tbl_shifts[Date],[@Date])'},
+             'value': 'Amount',
+             'formula': f'=SUMIFS({amt},{usr},$A{{r}},{dat},$B{{r}})'},
             {'header': 'Compensation Type'},
         ]
         self._write_table(ws, df, table_name='tbl_daily',
@@ -1282,26 +1349,41 @@ class CompensationReport:
         df['Eligible'] = df['PrePaymentEligible'].map({True: 'Yes', False: 'No'})
         df['Month Name'] = df['Year-Month'].apply(
             lambda ym: datetime(int(ym[:4]), int(ym[5:7]), 1).strftime('%B %Y'))
+        # Precompute the pre-pay columns so they can be written as cached formula
+        # values (correct in non-recalculating viewers, matching the live formulas).
+        df['Pre-Paid Amount'] = df['Eligible'].map(
+            lambda e: MONTHLY_PREPAY_AMOUNT if e == 'Yes' else 0.0)
+        df['Final Amount'] = (df['Amount'] - df['Pre-Paid Amount']).clip(lower=0)
         df = df[['User', 'Year-Month', 'Month Name', 'Eligible',
-                 'Compensated Hours', 'Amount']]
+                 'Compensated Hours', 'Amount', 'Pre-Paid Amount', 'Final Amount']]
 
         ws = writer.book.add_worksheet('Monthly Per User')
         writer.sheets['Monthly Per User'] = ws
+        # Cross-sheet SUMIFS against Detailed Shifts, matching this row's User
+        # (col A) and Year-Month (col B). Pre-Paid/Final reference sibling cells in
+        # this sheet (Eligible=D, Amount=F, Pre-Paid=G). Explicit refs only.
+        n_det = len(self._detailed_df())
+        hrs = self._abs_col(self.DETAILED_SHEET, self.DET['Compensated Hours'], n_det)
+        amt = self._abs_col(self.DETAILED_SHEET, self.DET['Amount'], n_det)
+        usr = self._abs_col(self.DETAILED_SHEET, self.DET['User'], n_det)
+        ym = self._abs_col(self.DETAILED_SHEET, self.DET['Year-Month'], n_det)
         cols = [
             {'header': 'User'},
             {'header': 'Year-Month'},
             {'header': 'Month Name'},
             {'header': 'Eligible'},
             {'header': 'Compensated Hours', 'format': 'hours', 'total': 'sum',
-             'formula': '=SUMIFS(tbl_shifts[Compensated Hours],'
-                        'tbl_shifts[User],[@User],tbl_shifts[Year-Month],[@[Year-Month]])'},
+             'value': 'Compensated Hours',
+             'formula': f'=SUMIFS({hrs},{usr},$A{{r}},{ym},$B{{r}})'},
             {'header': 'Amount', 'format': 'money', 'total': 'sum',
-             'formula': '=SUMIFS(tbl_shifts[Amount],'
-                        'tbl_shifts[User],[@User],tbl_shifts[Year-Month],[@[Year-Month]])'},
+             'value': 'Amount',
+             'formula': f'=SUMIFS({amt},{usr},$A{{r}},{ym},$B{{r}})'},
             {'header': 'Pre-Paid Amount', 'format': 'money', 'total': 'sum',
-             'formula': '=IF([@Eligible]="Yes",PrePay,0)'},
+             'value': 'Pre-Paid Amount',
+             'formula': '=IF($D{r}="Yes",PrePay,0)'},
             {'header': 'Final Amount', 'format': 'money', 'total': 'sum',
-             'formula': '=MAX(0,[@Amount]-[@[Pre-Paid Amount]])'},
+             'value': 'Final Amount',
+             'formula': '=MAX(0,$F{r}-$G{r})'},
         ]
         self._write_table(ws, df, table_name='tbl_monthly',
                           columns=cols, fmt=fmt, totals_label='Total')
@@ -1340,25 +1422,50 @@ class CompensationReport:
         ws.write_number('B11', NIGHT_SHORT_SHIFT_RATE, fmt['money'])
         ws.write('A12', 'Set yearly by collective agreement / law.', fmt['note'])
 
+        # Precompute the totals from the same frames the formulas sum over, so the
+        # cached formula values are correct in viewers that don't recalculate.
+        det = self._detailed_df()
+        ch = det['Compensated Hours']
+        totals = {
+            'total_hours':   ch.sum(),
+            'workday_hours': ch[~det['Is Holiday'] & ~det['Is Weekend']].sum(),
+            'weekend_hours': ch[~det['Is Holiday'] & det['Is Weekend']].sum(),
+            'holiday_hours': ch[det['Is Holiday']].sum(),
+        }
+        ump = self.get_user_month_totals()
+        if ump.empty:
+            gross = prepaid = final = 0.0
+        else:
+            eligible = ump['PrePaymentEligible'].astype(bool)
+            gross = ump['Amount'].sum()
+            prepaid = float((eligible * MONTHLY_PREPAY_AMOUNT).sum())
+            final = float((ump['Amount'] - eligible * MONTHLY_PREPAY_AMOUNT).clip(lower=0).sum())
+
+        # Explicit sheet-qualified ranges (not structured table refs) so the
+        # totals recalculate correctly in every viewer.
+        n_det = len(det)
+        n_mon = len(ump)
+        d_hrs = self._abs_col(self.DETAILED_SHEET, self.DET['Compensated Hours'], n_det)
+        d_hol = self._abs_col(self.DETAILED_SHEET, self.DET['Is Holiday'], n_det)
+        d_wknd = self._abs_col(self.DETAILED_SHEET, self.DET['Is Weekend'], n_det)
+        m_amt = self._abs_col(self.MONTHLY_SHEET, self.MON['Amount'], n_mon)
+        m_pre = self._abs_col(self.MONTHLY_SHEET, self.MON['Pre-Paid Amount'], n_mon)
+        m_fin = self._abs_col(self.MONTHLY_SHEET, self.MON['Final Amount'], n_mon)
+
         ws.write('A14', 'Totals', fmt['h2'])
-        # Row layout: label | live formula
+        # Row layout: label | live formula | cached value
         rows = [
-            ('Total compensated hours',  '=SUM(tbl_shifts[Compensated Hours])', 'hours'),
-            ('  Workday hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
-                                         'tbl_shifts[Is Holiday],FALSE,'
-                                         'tbl_shifts[Is Weekend],FALSE)', 'hours'),
-            ('  Weekend hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
-                                         'tbl_shifts[Is Holiday],FALSE,'
-                                         'tbl_shifts[Is Weekend],TRUE)', 'hours'),
-            ('  Holiday hours',          '=SUMIFS(tbl_shifts[Compensated Hours],'
-                                         'tbl_shifts[Is Holiday],TRUE)', 'hours'),
-            ('Gross compensation',       '=SUM(tbl_monthly[Amount])', 'money'),
-            ('Total pre-paid',           '=SUM(tbl_monthly[Pre-Paid Amount])', 'money'),
-            ('Additional to pay out',    '=SUM(tbl_monthly[Final Amount])', 'money'),
+            ('Total compensated hours',  f'=SUM({d_hrs})', 'hours', totals['total_hours']),
+            ('  Workday hours',          f'=SUMIFS({d_hrs},{d_hol},FALSE,{d_wknd},FALSE)', 'hours', totals['workday_hours']),
+            ('  Weekend hours',          f'=SUMIFS({d_hrs},{d_hol},FALSE,{d_wknd},TRUE)', 'hours', totals['weekend_hours']),
+            ('  Holiday hours',          f'=SUMIFS({d_hrs},{d_hol},TRUE)', 'hours', totals['holiday_hours']),
+            ('Gross compensation',       f'=SUM({m_amt})', 'money', gross),
+            ('Total pre-paid',           f'=SUM({m_pre})', 'money', prepaid),
+            ('Additional to pay out',    f'=SUM({m_fin})', 'money', final),
         ]
-        for i, (label, formula, kind) in enumerate(rows, start=15):
+        for i, (label, formula, kind, value) in enumerate(rows, start=15):
             ws.write(f'A{i}', label, fmt['label'] if not label.startswith(' ') else None)
-            ws.write_formula(f'B{i}', formula, fmt[kind])
+            ws.write_formula(f'B{i}', formula, fmt[kind], value)
 
         ws.set_tab_color('#1F4E78')
         ws.set_landscape()
