@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-07-22
+
+### Fixed
+
+- **Coverage gaps went uncompensated**: JSM Ops outages could split a single continuous on-call shift, leaving a gap (one shift ends, the next starts later) — e.g. a shift ending at 01:00 with the same engineer "restarting" at 02:15. On-call coverage is gapless (there is always an engineer on shift), so that uncovered time must still be paid. `fill_coverage_gaps` now runs at ingestion for every command and closes each gap by extending the earlier shift to the next shift's start, crediting the engineer who was on before it, and prints an audit log of every adjustment. It is idempotent and leaves overlaps untouched. In the current dataset this recovered 4 gaps totaling 2.43 h.
+
 ## 2026-07-21
 
 ### Fixed

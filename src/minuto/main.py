@@ -1693,6 +1693,31 @@ def resolve_rates(assume_yes=False):
     _print_rate_table()
 
 
+def fill_coverage_gaps(shifts: List[OnCallShift]) -> List[Tuple[datetime, datetime, float, str]]:
+    """Close gaps between consecutive on-call shifts, in place.
+
+    On-call coverage is meant to be gapless — there is always an engineer on
+    shift — so a gap (one shift ends, the next starts later) is a data artifact,
+    e.g. a JSM Ops outage that split a single continuous shift. The uncovered
+    time still has to be compensated, credited to whoever was on before the gap,
+    so each gap is closed by extending the earlier shift's end to the next
+    shift's start (and growing its hours to match).
+
+    Runs at ingestion, so it is robust to re-fetches, and is idempotent (a second
+    pass finds no gaps). Overlaps are left untouched. Returns the filled gaps as
+    (end_before, start_after, gap_hours, user) tuples for reporting.
+    """
+    ordered = sorted(shifts, key=lambda s: s.start)
+    filled = []
+    for prev, nxt in zip(ordered, ordered[1:]):
+        gap_hours = (nxt.start - prev.end).total_seconds() / 3600
+        if gap_hours > 1e-6:
+            filled.append((prev.end, nxt.start, round(gap_hours, 2), prev.user))
+            prev.end = nxt.start
+            prev.hours = round((prev.end - prev.start).total_seconds() / 3600, 2)
+    return filled
+
+
 def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_excel,
                    assume_yes=False):
     """Process shifts and generate compensation report."""
@@ -1703,6 +1728,16 @@ def process_shifts(shifts, user_profiles, create_profiles, output_plot, export_e
         create_default_user_profiles(users, output_path, shifts)
         if not user_profiles:  # if we just created default profiles, exit
             return
+
+    # Close coverage gaps (JSM outage artifacts) so uncovered time is still paid.
+    gaps = fill_coverage_gaps(shifts)
+    if gaps:
+        total_gap = sum(g[2] for g in gaps)
+        click.echo(f"\nClosed {len(gaps)} coverage gap(s) totaling {total_gap:.2f} h "
+                   f"(no-gap on-call policy); the time was credited to the engineer on before each gap:")
+        for end_before, start_after, gap_hours, user in gaps:
+            click.echo(f"  {end_before:%Y-%m-%d %H:%M} → {start_after:%Y-%m-%d %H:%M}  "
+                       f"+{gap_hours:.2f} h  → {user}")
 
     # Confirm/adjust the yearly rates and record them in the output.
     resolve_rates(assume_yes)
