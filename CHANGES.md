@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-07-21
+
+### Fixed
+
+- **XLSX data sheets read as all zeros in previews** (#10): formula cells were written with a cached result of `0`, so Daily Summary and Monthly Per User showed zeros in viewers that don't recalculate (Slack preview, Numbers, Google Sheets, LibreOffice in manual mode). The precomputed result is now written as the cached formula value, so the numbers are correct without recalculation while Excel still recalculates the live formula on open.
+- **`#REF!` / `#N/A` on recalculation** (#10): the report used structured table references (`[@Col]`, `tbl_name[Col]`) that Excel resolved unreliably in calculated columns and LibreOffice failed outright. Replaced with explicit sheet-qualified ranges and cell references, verified with a real LibreOffice headless recalc (zero error cells across the workbook).
+- **Excel "repaired" the workbook on open** (#10): the totals row was written inside the Excel table with formulas not declared as `totalsRowFunction="custom"`, an OOXML-spec violation. The totals row is now written just below each table, so no declaration is required.
+- **Text report and XLSX disagreed on the pre-pay** (#10): the text report hardcoded the monthly pre-pay (`510.0`) in six places while the XLSX used `MONTHLY_PREPAY_AMOUNT`, so the two diverged after the rate changed and the text report ignored the interactive rate adjustment. The text report now derives the pre-pay from the constant everywhere.
+- **Additional compensation netted the pre-pay inconsistently** (#10): the text report's per-user subtotals and grand total netted in aggregate (`max(0, Σearnings − Σpre-pay)`), disagreeing with its own per-month column and with the XLSX. All outputs now sum the per-month clamped finals (per-month floor: a month below the pre-pay contributes 0 and never offsets a busier month). This can raise the payout relative to the old aggregate figure.
+
+### Changed
+
+- **Hours shown to two decimals in the text report** (#11): per-shift, per-month, subtotal, grand-total, and hours-breakdown figures now print with two decimals, matching the XLSX precision (e.g. `3348.42` instead of `3348.4`). The chart annotation keeps one decimal.
+
 ## 2026-07-14
 
 ### Added
