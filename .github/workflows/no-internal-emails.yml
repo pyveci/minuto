@@ -1,0 +1,23 @@
+name: no-internal-emails
+
+# Guard against leaking real internal email addresses into a public repo.
+# Tests and fixtures must use RFC 2606 reserved domains (example.com / .org).
+on:
+  push:
+  pull_request:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject @crate.io addresses in tracked files
+        run: |
+          # git grep exits 0 when it finds matches. .github/ is excluded so this
+          # workflow file's own pattern doesn't trip the check.
+          if git grep -n -I -- '@crate.io' -- . ':!.github/'; then
+            echo "::error::Found @crate.io email address(es) in tracked files."
+            echo "Use example.com placeholders in tests and fixtures (public repo)."
+            exit 1
+          fi
+          echo "OK: no @crate.io addresses in tracked files."
