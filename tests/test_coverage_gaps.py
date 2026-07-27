@@ -13,7 +13,7 @@ from datetime import datetime
 from minuto.main import OnCallShift, fill_coverage_gaps
 
 
-def _shift(start, end, user="a@crate.io"):
+def _shift(start, end, user="a@example.com"):
     s = datetime.fromisoformat(start)
     e = datetime.fromisoformat(end)
     return OnCallShift(start=s, end=e,
@@ -36,11 +36,11 @@ class TestCoverageGaps(unittest.TestCase):
 
     def test_gap_credited_to_previous_engineer(self):
         shifts = [
-            _shift("2026-01-01T00:00:00", "2026-01-01T08:00:00", "before@crate.io"),
-            _shift("2026-01-01T09:00:00", "2026-01-01T17:00:00", "after@crate.io"),
+            _shift("2026-01-01T00:00:00", "2026-01-01T08:00:00", "before@example.com"),
+            _shift("2026-01-01T09:00:00", "2026-01-01T17:00:00", "after@example.com"),
         ]
         filled = fill_coverage_gaps(shifts)
-        self.assertEqual(filled[0][3], "before@crate.io")
+        self.assertEqual(filled[0][3], "before@example.com")
         self.assertEqual(shifts[0].end, datetime.fromisoformat("2026-01-01T09:00:00"))
 
     def test_no_cap_large_gap_filled(self):
