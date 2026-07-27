@@ -217,7 +217,7 @@ class TestPrepayConsistency(unittest.TestCase):
         # One user, one month above the pre-pay and one below. Per-month floor:
         # (800-536) + max(0, 100-536) = 264. Aggregate netting would give
         # max(0, 900 - 2*536) = 0. The grand total must be 264.
-        user = 'x@crate.io'
+        user = 'x@example.com'
         periods = [
             CompensationPeriod(
                 user=user,
@@ -252,14 +252,14 @@ class TestExcelExportMixedTimezones(unittest.TestCase):
         base = datetime(2026, 4, 6, 18, 0)
         periods = [
             CompensationPeriod(
-                user="walter@crate.io",
+                user="engineer-a@example.com",
                 start=pytz.timezone("Europe/Vienna").localize(base),
                 end=pytz.timezone("Europe/Vienna").localize(base + timedelta(hours=4)),
                 hours=4.0, compensated_hours=4.0, amount=22.84,
                 compensation_type=CompensationType.STANDARD,
             ),
             CompensationPeriod(
-                user="shyukri.shyukriev@crate.io",
+                user="engineer-b@example.com",
                 start=pytz.timezone("Europe/Sofia").localize(base),
                 end=pytz.timezone("Europe/Sofia").localize(base + timedelta(hours=4)),
                 hours=4.0, compensated_hours=4.0, amount=22.84,
